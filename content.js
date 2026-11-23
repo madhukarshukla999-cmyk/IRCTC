@@ -159,24 +159,46 @@
     LOG(name, '=', text(item));
   }
 
+  // Each field is tried on its own. A failure is logged and the rest still runs, so a field
+  // you filled by hand does not stop the search.
+  async function tryField(label, fn) {
+    try { await fn(); return true; } catch (e) {
+      activity('error', `${label}: ${e.message} (skipped)`);
+      document.body.click();
+      return false;
+    }
+  }
+
   async function fillSearch(cfg) {
     status('filling journey');
-    await pickStation('origin', cfg.from);
-    await pickStation('destination', cfg.to);
-    await pickDate(cfg.date);
+    let failed = 0;
+    if (cfg.from && !(await tryField('From', () => pickStation('origin', cfg.from)))) failed++;
+    if (cfg.to && !(await tryField('To', () => pickStation('destination', cfg.to)))) failed++;
+    if (cfg.date && !(await tryField('Date', () => pickDate(cfg.date)))) failed++;
     document.body.click();
     if (cfg.cls) {
       const full = CLASS_NAMES[cfg.cls];
-      await pickDropdown('journeyClass', (t) => t.includes(`(${cfg.cls})`) || (full && t.includes(full)));
+      if (!(await tryField('Class', () => pickDropdown('journeyClass', (t) => t.includes(`(${cfg.cls})`) || (full && t.includes(full)))))) failed++;
     }
-    if (cfg.quota) await pickDropdown('journeyQuota', (t) => t === cfg.quota.toUpperCase());
+    if (cfg.quota && !(await tryField('Quota', () => pickDropdown('journeyQuota', (t) => t === cfg.quota.toUpperCase())))) failed++;
+    if (failed) activity('error', `${failed} field(s) not filled; check the form before the search runs`);
   }
 
   function clickSearch() {
     const btn = $('button.search_btn.train_Search') || $('button.search_btn') ||
       $$('button').find((b) => /SEARCH|FIND TRAINS/.test(text(b).toUpperCase()));
     if (!btn) throw new Error('Search button not found');
+    btn.scrollIntoView({ block: 'center' });
     btn.click();
+    activity('ok', 'Search clicked');
+  }
+
+  // Find a visible, enabled forward button (Continue / Pay & Book) and never Back / Modify / Cancel.
+  function forwardButton(pattern) {
+    return $$('button, input[type="submit"], input[type="button"]').filter(visible).find((b) => {
+      const t = (text(b) || b.value || '').toUpperCase();
+      return !b.disabled && pattern.test(t) && !/BACK|MODIFY|CANCEL|RESET/.test(t);
+    }) || null;
   }
 
   function waitUntil(hhmmss) {
@@ -289,28 +311,120 @@
       const mob = $('input[formcontrolname="mobileNumber"], input#mobileNumber');
       if (mob) setValue(mob, cfg.mobile);
     }
-    status('passengers filled. Check them, then continue, solve the captcha and pay.', 'ok');
+    activity('ok', 'passengers filled');
+
+    if (!cfg.autoContinue) {
+      status('passengers filled. Check them, then click Continue yourself.', 'ok');
+      return chrome.storage.local.set({ armed: false });
+    }
+
+    // Payment mode on this page: pick the radio whose label mentions UPI.
+    const upiRadio = $$('input[type="radio"][name="paymentType"], input[type="radio"]').find((r) => {
+      const label = r.closest('label, p-radiobutton, .ui-radiobutton-wrapper, div') || r.parentElement;
+      return /BHIM|UPI/i.test(text(label)) && text(label).length < 200;
+    });
+    if (upiRadio) { upiRadio.click(); activity('info', 'payment mode: BHIM/UPI'); }
+    else activity('info', 'UPI payment-mode option not found; leaving the default');
+
+    await sleep(400);
+    const cont = forwardButton(/CONTINUE|PROCEED|NEXT/);
+    if (!cont) return status('Continue button not found on passenger page', 'error');
+    status('passenger Continue clicked');
+    cont.click();
+  }
+
+  // ---------- step 4: review booking (captcha) ----------
+  async function reviewStep(cfg) {
+    if (!cfg.autoContinue) return;
+    const end = Date.now() + 3 * 60 * 1000;
+    while (Date.now() < end && location.href.includes('reviewBooking')) {
+      const input = await waitFor(() => $$('input#captcha, input[formcontrolname="captcha"], input[name="captcha"], input#nlpAnswer, input[placeholder*="aptcha"]').find(visible), 15000);
+      if (!input) return status('captcha box not found on review page', 'error');
+      input.scrollIntoView({ block: 'center' });
+      input.focus();
+      status('type the captcha; Continue is clicked when you stop typing');
+      // Wait until at least 4 characters and no typing for 1 second.
+      let last = input.value, changed = Date.now();
+      while (Date.now() < end && location.href.includes('reviewBooking')) {
+        await sleep(150);
+        if (input.value !== last) { last = input.value; changed = Date.now(); }
+        if (last.trim().length >= 4 && Date.now() - changed > 1000) break;
+      }
+      if (!location.href.includes('reviewBooking')) return;
+      const cont = forwardButton(/CONTINUE|PROCEED|PAY/);
+      if (!cont) return status('Continue button not found on review page', 'error');
+      status('review Continue clicked');
+      cont.click();
+      // Wrong captcha: IRCTC stays on this page with a new captcha. Wait for the box to clear, then loop.
+      await waitFor(() => !location.href.includes('reviewBooking') || !input.isConnected || input.value === '', 6000, 200);
+      if (location.href.includes('reviewBooking')) activity('error', 'still on review page (wrong captcha?); type the new one');
+    }
+  }
+
+  // ---------- step 5: payment options ----------
+  async function paymentStep(cfg) {
+    if (!cfg.autoContinue) return;
+    status('choosing payment option');
+    await waitFor(() => $('.bank-type, #pay-type, button'), 15000);
+    await sleep(800);
+    const option = $$('#pay-type .bank-type, .bank-type').filter(visible)
+      .find((o) => /BHIM|UPI|IPAY/i.test(text(o)));
+    if (option) { option.click(); activity('info', 'payment option: ' + text(option).slice(0, 60)); await sleep(600); }
+    else activity('info', 'UPI payment option not found; using the default');
+    const pay = await waitFor(() => forwardButton(/PAY\s*&\s*BOOK|PAY AND BOOK|PAY/), 8000, 200);
+    if (!pay) return status('Pay & Book button not found', 'error');
+    status('Pay & Book clicked');
+    pay.click();
+  }
+
+  // ---------- step 6: IRCTC iPay gateway (UPI ID) ----------
+  async function gatewayStep(cfg) {
+    if (!cfg.autoContinue) return;
+    if (!cfg.upi) return status('no UPI ID saved; enter it on this page yourself', 'error');
+    status('filling UPI ID on payment gateway');
+    const radio = await waitFor(() => $('input#mandateUPI, input[name="mandateType"][value="upiMandate"]') ||
+      $$('input[type="radio"]').find((r) => {
+        const t = text(r.closest('label') || r.parentElement);
+        return /UPI/i.test(t) && t.length < 150;
+      }), 15000);
+    if (radio) { radio.click(); await sleep(800); }
+    const vpa = await waitFor(() => $$('input#mndtVpa, input[placeholder*="UPI" i], input[placeholder*="VPA" i]').find(visible), 10000);
+    if (!vpa) return status('UPI ID box not found on gateway', 'error');
+    vpa.focus();
+    setValue(vpa, cfg.upi);
+    vpa.dispatchEvent(new Event('blur', { bubbles: true }));
+    await sleep(600);
+    const pay = $('input#autoDebitBtn, .payment-btn-autoDebit') || forwardButton(/PAY|PROCEED|VERIFY/);
+    if (!pay) return status('Pay button not found on gateway', 'error');
+    pay.click();
+    status('UPI request sent. Approve the payment in your UPI app.', 'ok');
     chrome.storage.local.set({ armed: false });
   }
 
   // ---------- router ----------
   let running = false;
-  async function run(force) {
-    if (running) return;
+  let rerun = false;
+  async function run(force, fromRouteChange = false) {
+    if (running) { if (fromRouteChange) rerun = true; return; }
     const { config: cfg, armed } = await getStore();
     if (!cfg) return status('no saved settings (open the extension popup)', 'error');
     if (!armed && !force) return status(armed === false ? 'disarmed' : 'idle (not armed)', 'info');
     running = true;
     try {
       const url = location.href;
-      if (url.includes('train-list')) await trainListStep(cfg);
+      if (location.hostname.includes('irctcipay')) await gatewayStep(cfg);
+      else if (url.includes('train-list')) await trainListStep(cfg);
       else if (url.includes('psgninput')) await passengerStep(cfg);
+      else if (url.includes('reviewBooking')) await reviewStep(cfg);
+      else if (/bkgPaymentOptions|\/payment\//.test(url)) await paymentStep(cfg);
       else if (url.includes('train-search')) await searchStep(cfg);
       else status('this page is not handled: ' + location.pathname + ' (open the train search page)', 'error');
     } catch (e) {
       status('error: ' + e.message, 'error');
     } finally {
       running = false;
+      // The page changed while a step was still finishing; run the new page's step now.
+      if (rerun) { rerun = false; setTimeout(() => run(false), 0); }
     }
   }
 
@@ -369,7 +483,7 @@
   // IRCTC is a single-page app, so watch for route changes.
   let lastUrl = location.href;
   setInterval(() => {
-    if (location.href !== lastUrl) { lastUrl = location.href; run(false); }
+    if (location.href !== lastUrl) { lastUrl = location.href; run(false, true); }
   }, 300);
 
   panel.addEventListener('click', () => run(true));

@@ -1,11 +1,12 @@
-const FIELDS = ['from', 'to', 'date', 'train', 'cls', 'quota', 'mobile', 'passengers', 'start'];
+const FIELDS = ['from', 'to', 'date', 'train', 'cls', 'quota', 'mobile', 'passengers', 'upi', 'start'];
 const $ = (id) => document.getElementById(id);
 const say = (t) => { $('msg').textContent = t; setTimeout(() => ($('msg').textContent = ''), 2500); };
-const IRCTC = /^https:\/\/www\.irctc\.co\.in\//;
+const IRCTC = /^https:\/\/(www\.irctc\.co\.in|([a-z0-9-]+\.)?irctcipay\.com)\//;
 
 // ---------- settings ----------
 chrome.storage.local.get(['config', 'armed', 'activity'], ({ config = {}, armed, activity = [] }) => {
   FIELDS.forEach((f) => { if (config[f] != null) $(f).value = config[f]; });
+  $('autoContinue').checked = config.autoContinue !== false;
   if (armed) say('Armed');
   renderLog(activity);
 });
@@ -16,6 +17,7 @@ function collect() {
   config.from = config.from.toUpperCase();
   config.to = config.to.toUpperCase();
   config.cls = config.cls.toUpperCase();
+  config.autoContinue = $('autoContinue').checked;
   return config;
 }
 

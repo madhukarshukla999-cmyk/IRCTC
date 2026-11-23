@@ -10,6 +10,8 @@
   .row > div { flex: 1; }
   button { margin-top: 8px; padding: 5px 8px; }
   small { color: #555; }
+  label.check { font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  label.check input { width: auto; }
   #msg { color: #080; margin-left: 6px; }
   #tabinfo { margin-top: 8px; padding: 6px; border-radius: 4px; background: #f3f3f3; }
   #tabinfo.bad { background: #fde8e8; color: #900; }
@@ -44,6 +46,9 @@
   <label>Passengers</label>
   <textarea id="passengers" rows="3" placeholder="Name, Age, M/F/T, Berth, Food&#10;Ravi Kumar, 34, M, LB, V"></textarea>
   <small>One per line. Berth (LB, MB, UB, SL, SU, WS) and food (V, N, D = no food) are optional.</small>
+  <label>UPI ID</label><input id="upi" placeholder="name@okbank">
+  <label class="check"><input type="checkbox" id="autoContinue" checked> Continue automatically after passengers</label>
+  <small>Clicks Continue, waits for you to type the captcha, clicks Pay &amp; Book and sends the UPI request. You approve it in your UPI app.</small>
   <label>Start time (24h, optional)</label>
   <input id="start" placeholder="10:00:00">
   <small>Search is clicked at this time once armed (AC 10:00, non-AC 11:00).</small>

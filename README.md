@@ -13,9 +13,20 @@ You still log in, solve the captcha, and approve payment yourself.
 1. Click the extension icon, fill in the details, then "Save & arm".
 2. Log in to https://www.irctc.co.in yourself and open the train search page.
 3. The extension fills the search form, waits for the start time (if set), and clicks Search.
+   A field it cannot fill is logged and skipped; Search is still clicked.
 4. On the train list it selects your train, class and date and clicks Book Now.
-5. On the passenger page it fills the passengers and mobile number, then disarms.
-6. You review, continue, solve the captcha, and pay.
+5. On the passenger page it fills the passengers and mobile number.
+
+With "Continue automatically after passengers" on (default), it then:
+
+6. Picks the BHIM/UPI payment mode and clicks Continue.
+7. On the review page, focuses the captcha box. **You type the captcha**; Continue is clicked
+   once you stop typing for a second. If the captcha was wrong, it waits for you to type the new one.
+8. On the payment page, picks the BHIM/UPI option and clicks Pay & Book.
+9. On the IRCTC iPay gateway, enters your UPI ID and clicks Pay. **You approve the request in your
+   UPI app.** The extension then disarms.
+
+With the option off, it stops after step 5 and you continue by hand.
 
 A small status box at the bottom right shows progress. Click it to run the step for the current page.
 
