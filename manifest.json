@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "IRCTC Tatkal Autofill",
+  "version": "1.0.0",
+  "description": "Autofills IRCTC journey and passenger details from saved settings, with a timed start for Tatkal. You log in, solve captcha and pay.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://www.irctc.co.in/*"],
+  "action": { "default_popup": "popup.html", "default_title": "IRCTC Tatkal Autofill" },
+  "content_scripts": [
+    {
+      "matches": ["https://www.irctc.co.in/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

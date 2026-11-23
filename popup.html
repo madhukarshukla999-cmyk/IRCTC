@@ -1,0 +1,46 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { font: 13px system-ui, sans-serif; width: 340px; margin: 10px; }
+  label { display: block; margin-top: 8px; font-weight: 600; }
+  input, select, textarea { width: 100%; box-sizing: border-box; padding: 4px; }
+  .row { display: flex; gap: 6px; }
+  .row > div { flex: 1; }
+  button { margin-top: 10px; padding: 6px 10px; }
+  small { color: #555; }
+  #msg { color: #080; margin-left: 8px; }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div><label>From (code)</label><input id="from" placeholder="NDLS"></div>
+    <div><label>To (code)</label><input id="to" placeholder="BCT"></div>
+  </div>
+  <div class="row">
+    <div><label>Date</label><input id="date" placeholder="DD/MM/YYYY"></div>
+    <div><label>Train no.</label><input id="train" placeholder="12951"></div>
+  </div>
+  <div class="row">
+    <div><label>Class (code)</label><input id="cls" placeholder="3A"></div>
+    <div><label>Quota</label>
+      <select id="quota"><option>TATKAL</option><option>PREMIUM TATKAL</option><option>GENERAL</option></select>
+    </div>
+  </div>
+  <label>Mobile number</label><input id="mobile">
+  <label>Passengers</label>
+  <textarea id="passengers" rows="4" placeholder="Name, Age, M/F/T, Berth&#10;Ravi Kumar, 34, M, LB"></textarea>
+  <small>One per line. Berth is optional: LB, MB, UB, SL, SU, WS.</small>
+  <label>Start time (24h, optional)</label>
+  <input id="start" placeholder="10:00:00">
+  <small>Search is clicked at this time once armed (AC 10:00, non-AC 11:00).</small>
+  <div>
+    <button id="save">Save</button>
+    <button id="arm">Save &amp; arm</button>
+    <button id="disarm">Disarm</button>
+    <span id="msg"></span>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
