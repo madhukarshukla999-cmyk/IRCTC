@@ -25,8 +25,9 @@ You still log in, solve the captcha, and approve payment yourself.
 With "Continue automatically after passengers" on (default), it then:
 
 6. Picks the BHIM/UPI payment mode and clicks Continue.
-7. On the review page, focuses the captcha box. **You type the captcha**; Continue is clicked
-   once you stop typing for a second. If the captcha was wrong, it waits for you to type the new one.
+7. On the review page, clicks Continue. If IRCTC shows a captcha there, it focuses the captcha
+   box instead; **you type the captcha** and Continue is clicked once you stop typing for a second.
+   If the captcha was wrong, it waits for you to type the new one.
 8. On the payment page, picks the BHIM/UPI option and clicks Pay & Book.
 9. On the IRCTC iPay gateway, enters your UPI ID and clicks Pay. **You approve the request in your
    UPI app.** The extension then disarms.

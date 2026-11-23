@@ -607,30 +607,38 @@
   }
 
   // ---------- step 4: review booking (captcha) ----------
+  // IRCTC sometimes shows a captcha here and sometimes not (often not when you logged in with one).
+  // No captcha: click Continue straight away. Captcha: wait for the user to type it, then Continue.
+  const REVIEW_CAPTCHA = 'input#captcha, input[formcontrolname="captcha"], input[name="captcha"], input#nlpAnswer, input[placeholder*="aptcha"]';
   async function reviewStep(cfg) {
     if (!cfg.autoContinue && !dryRun) return;
+    const onReview = () => location.href.includes('reviewBooking');
     const end = Date.now() + 3 * 60 * 1000;
-    while (Date.now() < end && location.href.includes('reviewBooking')) {
-      const input = await waitFor(() => $$('input#captcha, input[formcontrolname="captcha"], input[name="captcha"], input#nlpAnswer, input[placeholder*="aptcha"]').find(visible), 15000);
-      if (!input) return status('captcha box not found on review page', 'error');
-      input.scrollIntoView({ block: 'center' });
-      input.focus();
-      status('type the captcha; Continue is clicked when you stop typing');
-      // Wait until at least 4 characters and no typing for 1 second.
-      let last = input.value, changed = Date.now();
-      while (Date.now() < end && location.href.includes('reviewBooking')) {
-        await sleep(100);
-        if (input.value !== last) { last = input.value; changed = Date.now(); }
-        if (last.trim().length >= 4 && Date.now() - changed > 1000) break;
+    status('review page: waiting for Continue');
+    for (let round = 1; round <= 5 && Date.now() < end && onReview(); round++) {
+      const cont0 = await waitFor(() => forwardButton(/CONTINUE|PROCEED|PAY/), 15000, 100);
+      if (!cont0) return status('Continue button not found on review page', 'error');
+      // Give a captcha box a moment to render before deciding there is none.
+      const captcha = await waitFor(() => $$(REVIEW_CAPTCHA).find(visible), round === 1 ? 1200 : 300, 50);
+      if (captcha) {
+        captcha.scrollIntoView({ block: 'center' });
+        captcha.focus();
+        status('type the captcha; Continue is clicked when you stop typing');
+        if (!(await waitForTyping(captcha, end - Date.now()))) {
+          if (!onReview()) return;
+          return status('no captcha typed in 3 minutes', 'error');
+        }
+        if (!onReview()) return;
       }
-      if (!location.href.includes('reviewBooking')) return;
       const cont = forwardButton(/CONTINUE|PROCEED|PAY/);
       if (!cont) return status('Continue button not found on review page', 'error');
-      status('review Continue clicked');
+      status(captcha ? 'review Continue clicked' : 'review Continue clicked (no captcha on this page)');
       cont.click();
-      // Wrong captcha: IRCTC stays on this page with a new captcha. Wait for the box to clear, then loop.
-      await waitFor(() => !location.href.includes('reviewBooking') || !input.isConnected || input.value === '', 6000, 100);
-      if (location.href.includes('reviewBooking')) activity('error', 'still on review page (wrong captcha?); type the new one');
+      // Leaves the page: done. Stays with an empty or new captcha: wrong captcha, or IRCTC now wants one.
+      const left = await waitFor(() => !onReview() || ($$(REVIEW_CAPTCHA).find(visible)?.value === '' && (!captcha || !captcha.isConnected || captcha.value === '')), 8000, 100);
+      if (!onReview()) return;
+      if (!left) return status('still on review page after Continue; check the page for a message', 'error');
+      activity('error', captcha ? 'still on review page (wrong captcha?); type the new one' : 'IRCTC now asks for a captcha; type it');
     }
   }
 
