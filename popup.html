@@ -3,14 +3,26 @@
 <head>
 <meta charset="utf-8">
 <style>
-  body { font: 13px system-ui, sans-serif; width: 340px; margin: 10px; }
+  body { font: 13px system-ui, sans-serif; width: 380px; margin: 10px; }
   label { display: block; margin-top: 8px; font-weight: 600; }
   input, select, textarea { width: 100%; box-sizing: border-box; padding: 4px; }
   .row { display: flex; gap: 6px; }
   .row > div { flex: 1; }
-  button { margin-top: 10px; padding: 6px 10px; }
+  button { margin-top: 8px; padding: 5px 8px; }
   small { color: #555; }
-  #msg { color: #080; margin-left: 8px; }
+  #msg { color: #080; margin-left: 6px; }
+  #tabinfo { margin-top: 8px; padding: 6px; border-radius: 4px; background: #f3f3f3; }
+  #tabinfo.bad { background: #fde8e8; color: #900; }
+  #tabinfo.good { background: #e8f6ea; color: #060; }
+  h3 { margin: 12px 0 4px; font-size: 13px; }
+  #log { height: 180px; overflow-y: auto; border: 1px solid #ccc; border-radius: 4px; padding: 4px;
+         font: 11px ui-monospace, monospace; background: #fafafa; }
+  #log div { padding: 1px 0; border-bottom: 1px dotted #e3e3e3; }
+  #log .error { color: #b00; }
+  #log .ok { color: #070; }
+  #log .step { color: #024; font-weight: 600; }
+  #log .info { color: #555; }
+  #log .t { color: #999; margin-right: 4px; }
 </style>
 </head>
 <body>
@@ -30,7 +42,7 @@
   </div>
   <label>Mobile number</label><input id="mobile">
   <label>Passengers</label>
-  <textarea id="passengers" rows="4" placeholder="Name, Age, M/F/T, Berth, Food&#10;Ravi Kumar, 34, M, LB, V"></textarea>
+  <textarea id="passengers" rows="3" placeholder="Name, Age, M/F/T, Berth, Food&#10;Ravi Kumar, 34, M, LB, V"></textarea>
   <small>One per line. Berth (LB, MB, UB, SL, SU, WS) and food (V, N, D = no food) are optional.</small>
   <label>Start time (24h, optional)</label>
   <input id="start" placeholder="10:00:00">
@@ -40,6 +52,17 @@
     <button id="arm">Save &amp; arm</button>
     <button id="disarm">Disarm</button>
     <span id="msg"></span>
+  </div>
+
+  <div id="tabinfo">Checking current tab...</div>
+
+  <h3>Activity</h3>
+  <div id="log"></div>
+  <div>
+    <button id="run">Run step now</button>
+    <button id="check">Check page</button>
+    <button id="copy">Copy log</button>
+    <button id="clear">Clear log</button>
   </div>
   <p><small id="ver"></small></p>
   <script src="popup.js"></script>

@@ -2,7 +2,28 @@
 // Selectors follow IRCTC's Angular/PrimeNG pages. If a step fails, the status box
 // and the DevTools console (prefix [Tatkal]) say which element was not found.
 (() => {
-  const LOG = (...a) => console.log('[Tatkal]', ...a);
+  // The popup may inject this file into a tab that already has it; run only once per page.
+  if (window.__tatkalAutofill) return;
+  window.__tatkalAutofill = true;
+
+  // ---------- activity log (shown in the popup) ----------
+  const MAX_LOG = 200;
+  let pending = [];
+  let flushTimer = null;
+  function activity(level, msg) {
+    console.log('[Tatkal]', msg);
+    pending.push({ t: Date.now(), level, msg, page: location.pathname });
+    if (!flushTimer) flushTimer = setTimeout(flush, 100);
+  }
+  function flush() {
+    flushTimer = null;
+    const batch = pending;
+    pending = [];
+    chrome.storage.local.get({ activity: [] }, ({ activity: log }) => {
+      chrome.storage.local.set({ activity: log.concat(batch).slice(-MAX_LOG) });
+    });
+  }
+  const LOG = (...a) => activity('info', a.map(String).join(' '));
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   async function waitFor(fn, timeout = 8000, step = 100) {
@@ -15,7 +36,8 @@
     return null;
   }
 
-  const visible = (el) => !!el && el.offsetParent !== null;
+  // getClientRects also works for elements inside position:fixed overlays (offsetParent does not).
+  const visible = (el) => !!el && el.getClientRects().length > 0;
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
   const text = (el) => (el ? el.textContent.replace(/\s+/g, ' ').trim() : '');
@@ -50,8 +72,9 @@
     'font:12px system-ui;padding:8px 10px;border-radius:6px;max-width:280px;opacity:.92;cursor:pointer';
   panel.title = 'Click to run the step for this page now';
   document.documentElement.appendChild(panel);
-  const status = (t) => { panel.textContent = 'Tatkal Autofill: ' + t; LOG(t); };
-  status('idle');
+  const status = (t, level = 'step') => { panel.textContent = 'Tatkal Autofill: ' + t; activity(level, t); };
+  activity('info', 'extension loaded on ' + location.pathname);
+  panel.textContent = 'Tatkal Autofill: idle';
 
   // ---------- step 1: journey search ----------
   const AUTOCOMPLETE_ITEMS = 'li.ui-autocomplete-list-item, .ui-autocomplete-items li, .ui-autocomplete-panel li, li[role="option"]';
@@ -183,13 +206,13 @@
     status('looking for train ' + cfg.train);
     const card = await waitFor(() => $$('app-train-avl-enq').find((c) =>
       text($('.train-heading strong', c) || c).includes(cfg.train)), 20000);
-    if (!card) return status(`train ${cfg.train} not in results`);
+    if (!card) return status(`train ${cfg.train} not in results`, 'error');
     card.scrollIntoView({ block: 'center' });
 
     // Pick the innermost matching element, since the click handler sits on div.pre-avl, not the td.
     const matches = $$('.pre-avl, td', card).filter((el) => text(el).includes(`(${cfg.cls})`));
     const classTile = matches.find((el) => !matches.some((o) => o !== el && el.contains(o)));
-    if (!classTile) return status(`class ${cfg.cls} not offered on ${cfg.train}`);
+    if (!classTile) return status(`class ${cfg.cls} not offered on ${cfg.train}`, 'error');
     classTile.click();
     status('checking availability');
 
@@ -202,7 +225,7 @@
       return cells.find((c) => dayRe.test(text(c))) ||
         cells.find((c) => !/NOT AVAILABLE|REGRET/i.test(text(c.closest('td') || c)));
     }, 15000, 200);
-    if (!dateCell) return status('availability did not load; click Refresh or the date yourself');
+    if (!dateCell) return status('availability did not load; click Refresh or the date yourself', 'error');
     dateCell.click();
     LOG('date cell =', text(dateCell.closest('td') || dateCell));
 
@@ -210,7 +233,7 @@
       const b = $$('button', card).find((x) => /BOOK NOW/i.test(text(x)));
       return b && !b.disabled && !b.classList.contains('disable-book') ? b : null;
     }, 8000, 150);
-    if (!book) return status('Book Now not enabled (no seats or not open yet)');
+    if (!book) return status('Book Now not enabled (no seats or not open yet)', 'error');
     status('booking');
     book.click();
   }
@@ -238,18 +261,18 @@
 
   async function passengerStep(cfg) {
     const list = parsePassengers(cfg.passengers || '');
-    if (!list.length) return status('no passengers saved');
+    if (!list.length) return status('no passengers saved', 'error');
     status('filling passengers');
     await waitFor(() => $('app-passenger'), 15000);
     for (let i = 0; i < list.length; i++) {
       if ($$('app-passenger').length <= i) {
         const add = $('button.add_psgn, a.add_psgn_btn') ||
           $$('a, span, button').find((e) => /^\+?\s*ADD PASSENGER/i.test(text(e)));
-        if (!add) return status('Add Passenger link not found');
+        if (!add) return status('Add Passenger link not found', 'error');
         add.click();
       }
       const row = await waitFor(() => $$('app-passenger')[i]);
-      if (!row) return status(`passenger row ${i + 1} not found`);
+      if (!row) return status(`passenger row ${i + 1} not found`, 'error');
       const p = list[i];
       const name = $('input[formcontrolname="passengerName"], p-autocomplete input, input[placeholder="Name"]', row);
       if (name) { name.focus(); setValue(name, p.name); name.dispatchEvent(new Event('blur', { bubbles: true })); }
@@ -266,7 +289,7 @@
       const mob = $('input[formcontrolname="mobileNumber"], input#mobileNumber');
       if (mob) setValue(mob, cfg.mobile);
     }
-    status('passengers filled. Check them, then continue, solve the captcha and pay.');
+    status('passengers filled. Check them, then continue, solve the captcha and pay.', 'ok');
     chrome.storage.local.set({ armed: false });
   }
 
@@ -275,21 +298,68 @@
   async function run(force) {
     if (running) return;
     const { config: cfg, armed } = await getStore();
-    if (!cfg) return status('no saved settings (open the extension popup)');
-    if (!armed && !force) return status(armed === false ? 'disarmed' : 'idle (not armed)');
+    if (!cfg) return status('no saved settings (open the extension popup)', 'error');
+    if (!armed && !force) return status(armed === false ? 'disarmed' : 'idle (not armed)', 'info');
     running = true;
     try {
       const url = location.href;
       if (url.includes('train-list')) await trainListStep(cfg);
       else if (url.includes('psgninput')) await passengerStep(cfg);
       else if (url.includes('train-search')) await searchStep(cfg);
-      else status('open the train search page');
+      else status('this page is not handled: ' + location.pathname + ' (open the train search page)', 'error');
     } catch (e) {
-      status('error: ' + e.message);
+      status('error: ' + e.message, 'error');
     } finally {
       running = false;
     }
   }
+
+  // ---------- page check (popup "Check page" button) ----------
+  const CHECKS = {
+    'train-search': {
+      'From station box': 'input#origin, p-autocomplete#origin input',
+      'To station box': 'input#destination, p-autocomplete#destination input',
+      'Date box': 'p-calendar input, input#jDate',
+      'Class dropdown': 'p-dropdown[formcontrolname="journeyClass"], p-dropdown#journeyClass, #journeyClass',
+      'Quota dropdown': 'p-dropdown[formcontrolname="journeyQuota"], p-dropdown#journeyQuota, #journeyQuota',
+      'Search button': 'button.search_btn',
+    },
+    'train-list': {
+      'Train cards': 'app-train-avl-enq',
+      'Train headings': '.train-heading strong',
+      'Class / date tiles': '.pre-avl',
+    },
+    psgninput: {
+      'Passenger rows': 'app-passenger',
+      'Name box': 'app-passenger input[formcontrolname="passengerName"], app-passenger p-autocomplete input, app-passenger input[placeholder="Name"]',
+      'Age box': 'input[formcontrolname="passengerAge"], input[placeholder="Age"]',
+      'Gender select': 'select[formcontrolname="passengerGender"]',
+      'Berth select': 'select[formcontrolname="passengerBerthChoice"]',
+      'Mobile box': 'input[formcontrolname="mobileNumber"], input#mobileNumber',
+    },
+  };
+
+  function checkPage() {
+    const key = Object.keys(CHECKS).find((k) => location.href.includes(k));
+    activity('step', 'page check: ' + location.href);
+    if (!key) {
+      activity('error', 'not a page this extension fills. Open https://www.irctc.co.in/nget/train-search');
+      return;
+    }
+    let missing = 0;
+    for (const [label, sel] of Object.entries(CHECKS[key])) {
+      const n = $$(sel).length;
+      if (!n) missing++;
+      activity(n ? 'ok' : 'error', `${label}: ${n ? n + ' found' : 'NOT FOUND'}`);
+    }
+    activity(missing ? 'error' : 'ok', missing ? `${missing} element(s) missing on this page` : 'all elements found');
+  }
+
+  chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
+    if (msg.type === 'ping') reply({ ok: true, page: location.pathname });
+    else if (msg.type === 'check') { checkPage(); reply({ ok: true }); }
+    else if (msg.type === 'run') { run(true); reply({ ok: true }); }
+  });
 
   // Start as soon as the user arms from the popup.
   chrome.storage.onChanged.addListener((changes, area) => {

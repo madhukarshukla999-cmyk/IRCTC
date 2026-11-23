@@ -26,11 +26,20 @@ and food (V, N, D = no food) are optional. Dates use `DD/MM/YYYY`.
 After `git pull`, click reload on the extension card in `chrome://extensions`, then refresh the
 IRCTC tab. The popup footer shows the loaded version.
 
+## Activity log
+The popup has an Activity panel that shows every step the extension takes on the page, with
+errors in red. Buttons under it:
+- **Run step now**: runs the step for the current page, even when not armed.
+- **Check page**: lists which page elements the extension can find (e.g. `Search button: NOT FOUND`).
+- **Copy log**: copies the log to the clipboard so you can share it.
+- **Clear log**: empties the log.
+
+The box above the log shows whether the popup is connected to an IRCTC tab. If the tab was open
+before the extension was installed or reloaded, the popup injects the script automatically.
+
 ## Troubleshooting
-- No status box on the page: the extension is not loaded. Check `chrome://extensions` for errors
-  and refresh the IRCTC tab.
-- Status shows `error: ...` or stops at a step: open DevTools (F12) > Console and look for lines
-  starting with `[Tatkal]`. They name the element that was not found.
+- Box above the log is red: the current tab is not IRCTC, or the page needs a refresh.
+- A step fails: click **Check page**, then **Copy log**, and share the copied text.
 
 ## Notes
 - Selectors for IRCTC's Angular pages were written without access to the live site and will need
