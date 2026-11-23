@@ -67,22 +67,30 @@
   let dryRun = false;
 
   // ---------- status panel ----------
+  // Two lines: what the extension is doing, and a live IRCTC clock.
   const panel = document.createElement('div');
   panel.style.cssText =
     'position:fixed;bottom:12px;right:12px;z-index:2147483647;background:#222;color:#fff;' +
-    'font:12px system-ui;padding:8px 10px;border-radius:6px;max-width:280px;opacity:.92;cursor:pointer';
+    'font:12px system-ui;padding:8px 10px;border-radius:6px;max-width:300px;opacity:.92;cursor:pointer';
   panel.title = 'Click to run the step for this page now';
+  const panelMsg = document.createElement('div');
+  const panelClock = document.createElement('div');
+  panelClock.style.cssText = 'margin-top:3px;color:#9fd;font:11px ui-monospace,monospace';
+  panel.append(panelMsg, panelClock);
   document.documentElement.appendChild(panel);
-  const status = (t, level = 'step') => { panel.textContent = 'Tatkal Autofill: ' + (dryRun ? '[dry run] ' : '') + t; activity(level, t); };
+  const status = (t, level = 'step') => { panelMsg.textContent = 'Tatkal Autofill: ' + (dryRun ? '[dry run] ' : '') + t; activity(level, t); };
   activity('info', 'extension loaded on ' + location.pathname);
-  panel.textContent = 'Tatkal Autofill: idle';
+  panelMsg.textContent = 'Tatkal Autofill: idle';
 
   // ---------- server clock ----------
   // Each response's Date header (1 s resolution) bounds the offset between IRCTC's clock and
   // this computer's clock: offset is in [Date - received, Date + 1000 - sent]. Intersecting the
   // bounds of several requests sent at different sub-second moments narrows it down.
   let clockOffset = 0;
+  let clockKnown = false;
+  let clockFailed = false;
   async function syncServerTime(samples = 6) {
+    if (!location.hostname.includes('irctc.co.in')) return false; // only IRCTC's own site is measured
     let lo = -Infinity, hi = Infinity, best = null;
     for (let i = 0; i < samples; i++) {
       try {
@@ -98,15 +106,33 @@
       } catch (e) { /* network hiccup: skip this sample */ }
       await sleep(170 + Math.random() * 120); // spread samples across the second
     }
-    if (!best) { activity('error', 'could not read IRCTC server time; using this computer\'s clock'); return false; }
+    if (!best) { clockFailed = true; activity('error', 'could not read IRCTC server time; using this computer\'s clock'); return false; }
     let offset, err;
     if (lo <= hi) { offset = (lo + hi) / 2; err = (hi - lo) / 2; } else { offset = best.mid; err = 500 + best.rtt / 2; }
     clockOffset = Math.round(offset);
+    clockKnown = true;
     const sign = clockOffset >= 0 ? '+' : '-';
     activity('info', `IRCTC clock is ${sign}${(Math.abs(clockOffset) / 1000).toFixed(2)}s vs this computer (±${(err / 1000).toFixed(2)}s)`);
+    chrome.storage.local.set({ clock: { offset: clockOffset, err: Math.round(err), at: Date.now() } });
     return true;
   }
   const serverNow = () => Date.now() + clockOffset;
+
+  // Live IRCTC clock in the status box. Uses a measurement from the last 10 minutes, else measures now.
+  const hms = (ms) => new Date(ms).toTimeString().slice(0, 8);
+  chrome.storage.local.get(['clock'], ({ clock }) => {
+    if (clock && Date.now() - clock.at < 10 * 60 * 1000) { clockOffset = clock.offset; clockKnown = true; }
+    else syncServerTime(4);
+  });
+  setInterval(() => {
+    if (!clockKnown) {
+      panelClock.textContent = !location.hostname.includes('irctc.co.in') ? 'IRCTC time: not measured (open irctc.co.in first)'
+        : clockFailed ? 'IRCTC time: could not be read; using this computer\'s clock' : 'IRCTC time: measuring…';
+      return;
+    }
+    const off = clockOffset / 1000;
+    panelClock.textContent = `IRCTC time ${hms(serverNow())}  (your clock ${off >= 0 ? 'behind' : 'ahead'} ${Math.abs(off).toFixed(2)}s)`;
+  }, 250);
 
   // ---------- IRCTC pop-ups ----------
   // Only harmless notices are closed automatically. Anything about logging out or sessions,
@@ -395,7 +421,7 @@
       const diff = target - serverNow();
       if (diff <= 0) break;
       if (!resynced && diff < 45000) { resynced = true; await syncServerTime(4); continue; }
-      panel.textContent = `Tatkal Autofill: waiting ${Math.ceil(diff / 1000)}s until ${hhmmss} (IRCTC time)`;
+      panelMsg.textContent = `Tatkal Autofill: waiting ${Math.ceil(diff / 1000)}s until ${hhmmss} (IRCTC time)`;
       await sleep(Math.min(diff, diff > 2000 ? 250 : 10));
     }
   }
@@ -694,10 +720,72 @@
   }
 
   // ---------- step 6: IRCTC iPay gateway (UPI ID) ----------
+  // New IRCTC iPay page: UPI > "Click Here To Pay Using QR", then Pay Now shows a QR to scan.
+  // Returns true if it handled the page this way.
+  // The "UPI" section header. Use the innermost element with exactly that text, since a click on it
+  // also reaches any handler on its parents.
+  function upiHeader() {
+    const m = $$('div, span, a, h3, h4, p, button').filter(visible).filter((e) => /^\s*UPI\s*$/i.test(text(e)));
+    return m.find((e) => !m.some((o) => o !== e && e.contains(o))) || null;
+  }
+
+  async function gatewayQr() {
+    const qrOption = () => $$('input[type="radio"]').map((r) => ({ r, label: radioLabel(r) }))
+      .find((o) => o.label && /PAY\s*USING\s*QR|SCAN.*QR|\bQR\b/i.test(o.label.text));
+    let opt = await waitFor(qrOption, 6000, 100);
+    if (!opt) {
+      // The UPI section may be collapsed: open it and look again.
+      const header = upiHeader();
+      if (header) { header.click(); opt = await waitFor(qrOption, 3000, 100); }
+    }
+    if (!opt) return false;
+    // Found but hidden (UPI section collapsed): open the section so the click is a real one.
+    if (!visible(opt.label.target || opt.r.closest('label') || opt.r)) {
+      const header = upiHeader();
+      if (header) { header.click(); await waitFor(() => visible(opt.r.closest('label') || opt.label.target || opt.r), 2000, 50); }
+    }
+
+    status('payment gateway: choosing "Pay Using QR"');
+    const isOn = () => opt.r.checked;
+    if (!isOn()) {
+      (opt.label.target || opt.r.closest('label') || opt.r).click();
+      await waitFor(isOn, 400, 20);
+      if (!isOn()) { opt.r.click(); await waitFor(isOn, 400, 20); }
+    }
+    if (!isOn()) return status('could not select "Click Here To Pay Using QR"; select it yourself', 'error'), true;
+    activity('info', 'payment gateway: "' + opt.label.text.slice(0, 50) + '" selected');
+
+    // Pay Now is grey until an option is chosen; wait for it to become clickable.
+    const enabled = (b) => b && !b.disabled && !/disabled/i.test(b.className) && b.getAttribute('aria-disabled') !== 'true';
+    const payNow = await waitFor(() => {
+      const b = $$('button, input[type="button"], input[type="submit"], a').filter(visible)
+        .find((x) => /^\s*(PAY\s*NOW|PROCEED|PAY)\s*$/i.test(text(x) || x.value || ''));
+      return enabled(b) ? b : null;
+    }, 5000, 100);
+    if (!payNow) return status('Pay Now did not become active; click it yourself', 'error'), true;
+    payNow.click();
+    activity('step', 'payment gateway: Pay Now clicked');
+
+    // Show the QR code to the user.
+    const qr = await waitFor(() => $$('img, canvas, svg').filter(visible).find((e) =>
+      /qr/i.test(`${e.className?.baseVal ?? e.className} ${e.id} ${e.getAttribute('alt') || ''} ${e.getAttribute('src') || ''}`.slice(0, 300)) ||
+      /scan/i.test(text(e.closest('div')).slice(0, 200)) && e.getBoundingClientRect().width >= 100), 15000, 150);
+    if (qr) {
+      qr.scrollIntoView({ block: 'center' });
+      status('QR code shown. Scan it with any UPI app and approve the payment.', 'ok');
+    } else {
+      status('Pay Now clicked; QR code not detected yet. Look for it on the page and scan it with your UPI app.', 'ok');
+    }
+    chrome.storage.local.set({ armed: false });
+    return true;
+  }
+
   async function gatewayStep(cfg) {
     if (dryRun) return status('dry run: on payment gateway, doing nothing', 'error');
     if (!cfg.autoContinue) return;
-    if (!cfg.upi) return status('no UPI ID saved; enter it on this page yourself', 'error');
+    if (await gatewayQr()) return;
+    // Older gateway page with a UPI ID (VPA) box.
+    if (!cfg.upi) return status('no QR option and no UPI ID saved; finish the payment on this page yourself', 'error');
     status('filling UPI ID on payment gateway');
     const radio = await waitFor(() => $('input#mandateUPI, input[name="mandateType"][value="upiMandate"]') ||
       $$('input[type="radio"]').find((r) => {

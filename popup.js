@@ -272,6 +272,25 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (changes.trips) renderTrips(changes.trips.newValue || {});
 });
 
+// ---------- IRCTC clock ----------
+// The page measures IRCTC's clock and stores { offset, err, at }; show it live here.
+let clock = null;
+chrome.storage.local.get(['clock'], (r) => { clock = r.clock || null; });
+chrome.storage.onChanged.addListener((c, area) => { if (area === 'local' && c.clock) clock = c.clock.newValue; });
+setInterval(() => {
+  const el = $('irctcClock');
+  if (!clock) { el.textContent = 'IRCTC time: open IRCTC to measure'; return; }
+  const now = new Date(Date.now() + clock.offset).toTimeString().slice(0, 8);
+  const off = clock.offset / 1000;
+  const age = Math.round((Date.now() - clock.at) / 60000);
+  el.textContent = `IRCTC ${now} | your clock ${off >= 0 ? 'behind' : 'ahead'} ${Math.abs(off).toFixed(2)}s` +
+    (age >= 10 ? ` (measured ${age} min ago)` : '');
+}, 250);
+$('syncClock').onclick = async () => {
+  $('irctcClock').textContent = 'IRCTC time: measuring…';
+  if (await send('sync')) say('Clock synced');
+};
+
 $('ver').textContent = 'Version ' + chrome.runtime.getManifest().version;
 showTabInfo();
 showLoginState();

@@ -29,6 +29,9 @@
   #log .info { color: #555; }
   #log .t { color: #999; margin-right: 4px; }
   #dry { background: #fff7e0; }
+  .clock { margin-top: 6px; display: flex; align-items: center; justify-content: space-between; gap: 6px;
+           background: #eef8f4; border: 1px solid #cde; border-radius: 4px; padding: 4px 6px; font: 12px ui-monospace, monospace; }
+  .clock button { margin-top: 0; }
   details.login { margin-top: 8px; border: 1px solid #dde; border-radius: 4px; padding: 6px; background: #f6f7fb; }
   details.login summary { font-weight: 600; cursor: pointer; }
   #loginState { font-weight: normal; margin-left: 6px; }
@@ -88,14 +91,15 @@
   <small>One per line. Berth (LB, MB, UB, SL, SU, WS) and food (V, N, D = no food) are optional.</small>
   <label class="check"><input type="checkbox" id="autoUpgrade" checked> Consider for auto upgradation</label>
   <label class="check"><input type="checkbox" id="confirmOnly" checked> Book only if confirm berths are allotted</label>
-  <label>UPI ID</label><input id="upi" placeholder="name@okbank">
+  <label>UPI ID (only for the older gateway page; the new one shows a QR)</label><input id="upi" placeholder="name@okbank">
   <label class="check"><input type="checkbox" id="autoContinue" checked> Continue automatically after passengers</label>
-  <small>Clicks Continue, waits for you to type the captcha, clicks Pay &amp; Book and sends the UPI request. You approve it in your UPI app.</small>
+  <small>Clicks Continue (waits for you to type a captcha if one is shown), picks IRCTC iPay New, clicks Pay &amp; Book, then chooses Pay Using QR and Pay Now. You scan the QR and approve.</small>
   <div class="row">
     <div><label>Start time (24h, IRCTC time)</label><input id="start" placeholder="10:00:00"></div>
     <div><label>Retry Book Now for (s)</label><input id="retrySec" type="number" min="0" max="120" placeholder="30"></div>
   </div>
   <small>Search is clicked at the start time on IRCTC's clock (AC 10:00, non-AC 11:00). If Book Now is not ready, availability is refreshed every 2 s for the retry time.</small>
+  <div class="clock"><span id="irctcClock">IRCTC time: not measured yet</span> <button id="syncClock">Sync clock</button></div>
   <div>
     <button id="save">Save</button>
     <button id="arm">Save &amp; arm</button>

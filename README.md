@@ -30,8 +30,9 @@ With "Continue automatically after passengers" on (default), it then:
    If the captcha was wrong, it waits for you to type the new one.
 8. On the Payment Methods page, selects **IRCTC iPay**, clicks the **IRCTC iPay New** tile, then
    clicks **Pay & Book**.
-9. On the IRCTC iPay gateway, enters your UPI ID and clicks Pay. **You approve the request in your
-   UPI app.** The extension then disarms.
+9. On the IRCTC iPay gateway, opens UPI, selects **Click Here To Pay Using QR** and clicks **Pay Now**.
+   **Scan the QR code with any UPI app and approve the payment.** The extension then disarms.
+   (On the older gateway page with a UPI ID box, it enters your saved UPI ID and clicks Pay instead.)
 
 With the option off, it stops after step 5 and you continue by hand.
 
@@ -74,6 +75,12 @@ When a start time is set, the extension sends a few small requests to irctc.co.i
 time in the responses to work out how far your computer's clock is from IRCTC's (shown in the log,
 e.g. `IRCTC clock is +1.24s vs this computer (±0.11s)`). It checks again about 45 s before the
 start time. Your computer should be set to Indian time (IST).
+
+## IRCTC clock
+On irctc.co.in the extension reads IRCTC's clock when the page loads (re-read if older than 10
+minutes) and shows it live in the status box on the page and in the popup, with how far your
+computer's clock is off, e.g. `IRCTC time 09:59:58 (your clock behind 1.24s)`. **Sync clock** in the
+popup measures again. The start time always uses IRCTC's clock.
 
 ## IRCTC pop-ups
 While armed, the extension watches for IRCTC pop-ups and logs their text. It only closes
