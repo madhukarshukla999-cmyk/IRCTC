@@ -643,16 +643,47 @@
   }
 
   // ---------- step 5: payment options ----------
+  // Payment Methods page: left column = methods (#pay-type .bank-type), right side = providers
+  // (#bank-type .bank-text). Choose "IRCTC iPay" then the "IRCTC iPay New" tile, then Pay & Book.
+  const PAY_METHODS = '#pay-type .bank-type, .bank-type';
+  const PAY_PROVIDERS = '#bank-type .bank-text, #bank-type .pay_tax_text, .bank-text';
+  const isActive = (el) => /active|selected/i.test(el.className) || !!el.querySelector('[class*="active"], [class*="selected"]');
+
   async function paymentStep(cfg) {
     if (!cfg.autoContinue && !dryRun) return;
-    status('choosing payment option');
-    await waitFor(() => $$('.bank-type, #pay-type').some(visible), 15000);
+    status('choosing payment method');
+    await waitFor(() => $$(PAY_METHODS).some(visible), 15000);
     await sleep(200);
-    const option = $$('#pay-type .bank-type, .bank-type').filter(visible)
-      .find((o) => isBhimUpi(text(o)) || (/UPI|IPAY/i.test(text(o)) && !/CREDIT|DEBIT|NET ?BANKING|UPI_C/i.test(text(o))));
-    if (option) { option.click(); activity('info', 'payment option: ' + text(option).slice(0, 60)); await sleep(200); }
-    else activity('info', 'UPI payment option not found; using the default');
-    const pay = await waitFor(() => forwardButton(/PAY\s*&\s*BOOK|PAY AND BOOK|PAY/), 8000, 100);
+
+    // 1. Method: IRCTC iPay (fallback: a BHIM/UPI method). Click only if not already selected.
+    const methods = $$(PAY_METHODS).filter(visible);
+    const method = methods.find((m) => /IRCTC\s*i-?Pay/i.test(text(m))) ||
+      methods.find((m) => isBhimUpi(text(m)) || (/UPI/i.test(text(m)) && !/CREDIT|DEBIT|NET ?BANKING|UPI_C/i.test(text(m))));
+    if (method) {
+      if (!isActive(method)) { method.click(); await sleep(300); }
+      activity('info', 'payment method: ' + text(method).slice(0, 60));
+    } else {
+      activity('error', 'IRCTC iPay method not found; methods seen: ' + methods.map((m) => `"${text(m).slice(0, 40)}"`).join(', '));
+    }
+
+    // 2. Provider tile: "IRCTC iPay New" (fallbacks: any "IRCTC iPay" tile, or the only tile shown).
+    const providers = () => $$(PAY_PROVIDERS).filter(visible).filter((p) => text(p));
+    const provider = await waitFor(() => {
+      const list = providers();
+      return list.find((p) => /IRCTC\s*i-?Pay\s*New/i.test(text(p))) ||
+        list.find((p) => /IRCTC\s*i-?Pay/i.test(text(p))) || (list.length === 1 ? list[0] : null);
+    }, 5000, 100);
+    if (provider) {
+      provider.click();
+      activity('info', 'payment provider: ' + text(provider).slice(0, 60));
+      await sleep(300);
+    } else {
+      activity('error', 'IRCTC iPay New tile not found; tiles seen: ' + (providers().map((p) => `"${text(p).slice(0, 40)}"`).join(', ') || 'none'));
+    }
+
+    // 3. Pay & Book.
+    const pay = await waitFor(() => $$('button.btn-primary, button').filter(visible)
+      .find((b) => /PAY\s*&\s*BOOK|PAY AND BOOK/i.test(text(b)) && !b.disabled) || forwardButton(/PAY\s*&\s*BOOK|PAY AND BOOK|PAY/), 8000, 100);
     if (!pay) return status('Pay & Book button not found', 'error');
     if (dryRun) {
       status(`dry run finished: found "${text(pay) || pay.value}" and did NOT click it. Nothing was booked or paid.`, 'ok');
