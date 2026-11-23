@@ -1,16 +1,21 @@
-const FIELDS = ['from', 'to', 'date', 'train', 'cls', 'quota', 'mobile', 'passengers', 'upi', 'start'];
+const FIELDS = ['from', 'to', 'date', 'train', 'cls', 'quota', 'mobile', 'passengers', 'upi', 'start', 'retrySec'];
+const CHECKS = ['autoContinue', 'autoUpgrade', 'confirmOnly']; // default: ticked
 const $ = (id) => document.getElementById(id);
 const say = (t) => { $('msg').textContent = t; setTimeout(() => ($('msg').textContent = ''), 2500); };
 const IRCTC = /^https:\/\/(www\.irctc\.co\.in|([a-z0-9-]+\.)?irctcipay\.com)\//;
 
 // ---------- settings ----------
-chrome.storage.local.get(['config', 'armed', 'activity'], ({ config = {}, armed, activity = [] }) => {
-  FIELDS.forEach((f) => { if (config[f] != null) $(f).value = config[f]; });
-  $('autoContinue').checked = config.autoContinue !== false;
-  $('autoUpgrade').checked = config.autoUpgrade !== false;
-  $('confirmOnly').checked = config.confirmOnly !== false;
+function applyConfig(config = {}) {
+  FIELDS.forEach((f) => { $(f).value = config[f] != null ? config[f] : ''; });
+  if (!config.quota) $('quota').value = 'TATKAL';
+  CHECKS.forEach((c) => { $(c).checked = config[c] !== false; });
+}
+
+chrome.storage.local.get(['config', 'armed', 'activity', 'trips'], ({ config = {}, armed, activity = [], trips = {} }) => {
+  applyConfig(config);
   if (armed) say('Armed');
   renderLog(activity);
+  renderTrips(trips);
 });
 
 // Accept "GD" or a pasted IRCTC name like "GONDA JN. - GD (GONDA)"; keep just the code.
@@ -25,12 +30,10 @@ function collect() {
   FIELDS.forEach((f) => (config[f] = $(f).value.trim()));
   config.from = stationCode(config.from);
   config.to = stationCode(config.to);
-  $('from').value = config.from;
-  $('to').value = config.to;
   config.cls = config.cls.toUpperCase();
-  config.autoContinue = $('autoContinue').checked;
-  config.autoUpgrade = $('autoUpgrade').checked;
-  config.confirmOnly = $('confirmOnly').checked;
+  config.retrySec = config.retrySec === '' ? 30 : Math.min(120, Math.max(0, Number(config.retrySec) || 0));
+  CHECKS.forEach((c) => (config[c] = $(c).checked));
+  applyConfig(config); // show the cleaned-up values
   return config;
 }
 
@@ -38,9 +41,62 @@ function collect() {
 function addLog(level, msg) {
   chrome.storage.local.get({ activity: [] }, ({ activity }) => {
     activity.push({ t: Date.now(), level, msg, page: 'popup' });
-    chrome.storage.local.set({ activity: activity.slice(-200) });
+    chrome.storage.local.set({ activity: activity.slice(-300) });
   });
 }
+
+// ---------- saved trips ----------
+function renderTrips(trips) {
+  const sel = $('trips');
+  const current = sel.value;
+  sel.textContent = '';
+  const first = document.createElement('option');
+  first.value = '';
+  first.textContent = Object.keys(trips).length ? 'Saved trips…' : 'No saved trips yet';
+  sel.appendChild(first);
+  for (const name of Object.keys(trips).sort()) {
+    const o = document.createElement('option');
+    o.value = name;
+    o.textContent = name;
+    sel.appendChild(o);
+  }
+  if (trips[current]) sel.value = current;
+}
+
+$('saveTrip').onclick = () => {
+  const name = $('tripName').value.trim();
+  if (!name) return say('Enter a trip name');
+  const config = collect();
+  chrome.storage.local.get({ trips: {} }, ({ trips }) => {
+    trips[name] = config;
+    chrome.storage.local.set({ trips, config }, () => {
+      renderTrips(trips);
+      $('trips').value = name;
+      say('Trip saved');
+      addLog('info', `trip "${name}" saved`);
+    });
+  });
+};
+
+$('loadTrip').onclick = () => {
+  const name = $('trips').value;
+  if (!name) return say('Pick a trip');
+  chrome.storage.local.get({ trips: {} }, ({ trips }) => {
+    if (!trips[name]) return say('Trip not found');
+    applyConfig(trips[name]);
+    $('tripName').value = name;
+    chrome.storage.local.set({ config: trips[name] }, () => { say('Trip loaded'); addLog('info', `trip "${name}" loaded`); });
+  });
+};
+
+$('deleteTrip').onclick = () => {
+  const name = $('trips').value;
+  if (!name) return say('Pick a trip');
+  chrome.storage.local.get({ trips: {} }, ({ trips }) => {
+    delete trips[name];
+    chrome.storage.local.set({ trips }, () => { renderTrips(trips); say('Trip deleted'); addLog('info', `trip "${name}" deleted`); });
+  });
+};
 
 // ---------- current tab ----------
 async function activeTab() {
@@ -88,17 +144,21 @@ async function send(type) {
   catch (e) { addLog('error', 'message to page failed: ' + e.message); return false; }
 }
 
-// ---------- buttons ----------
-$('save').onclick = () => chrome.storage.local.set({ config: collect() }, () => { say('Saved'); addLog('info', 'settings saved'); });
-$('arm').onclick = async () => {
+async function arm(dry) {
   const tab = await activeTab();
   await ensureScript(tab);
-  chrome.storage.local.set({ config: collect(), armed: true }, () => {
-    say('Armed');
-    addLog('step', IRCTC.test((tab && tab.url) || '') ? 'armed' : 'armed (now open the IRCTC train search page)');
+  chrome.storage.local.set({ config: collect(), armed: true, dryRun: dry }, () => {
+    say(dry ? 'Dry run started' : 'Armed');
+    const where = IRCTC.test((tab && tab.url) || '') ? '' : ' (now open the IRCTC train search page)';
+    addLog('step', (dry ? 'dry run armed: full flow, stops before Pay & Book' : 'armed') + where);
   });
-};
-$('disarm').onclick = () => chrome.storage.local.set({ armed: false }, () => { say('Disarmed'); addLog('info', 'disarmed'); });
+}
+
+// ---------- buttons ----------
+$('save').onclick = () => chrome.storage.local.set({ config: collect() }, () => { say('Saved'); addLog('info', 'settings saved'); });
+$('arm').onclick = () => arm(false);
+$('dry').onclick = () => arm(true);
+$('disarm').onclick = () => chrome.storage.local.set({ armed: false, dryRun: false }, () => { say('Disarmed'); addLog('info', 'disarmed'); });
 $('run').onclick = () => send('run');
 $('check').onclick = () => send('check');
 $('clear').onclick = () => chrome.storage.local.set({ activity: [] });
@@ -125,7 +185,9 @@ function renderLog(entries) {
 }
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && changes.activity) renderLog(changes.activity.newValue || []);
+  if (area !== 'local') return;
+  if (changes.activity) renderLog(changes.activity.newValue || []);
+  if (changes.trips) renderTrips(changes.trips.newValue || {});
 });
 
 $('ver').textContent = 'Version ' + chrome.runtime.getManifest().version;

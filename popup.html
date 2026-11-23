@@ -17,6 +17,9 @@
   #tabinfo.bad { background: #fde8e8; color: #900; }
   #tabinfo.good { background: #e8f6ea; color: #060; }
   h3 { margin: 12px 0 4px; font-size: 13px; }
+  .trips { background: #f6f7fb; border: 1px solid #dde; border-radius: 4px; padding: 6px; }
+  .trips .row { align-items: center; }
+  .trips button { margin-top: 4px; }
   #log { height: 180px; overflow-y: auto; border: 1px solid #ccc; border-radius: 4px; padding: 4px;
          font: 11px ui-monospace, monospace; background: #fafafa; }
   #log div { padding: 1px 0; border-bottom: 1px dotted #e3e3e3; }
@@ -25,9 +28,22 @@
   #log .step { color: #024; font-weight: 600; }
   #log .info { color: #555; }
   #log .t { color: #999; margin-right: 4px; }
+  #dry { background: #fff7e0; }
 </style>
 </head>
 <body>
+  <div class="trips">
+    <div class="row">
+      <div><select id="trips"><option value="">Saved trips…</option></select></div>
+      <button id="loadTrip">Load</button>
+      <button id="deleteTrip">Delete</button>
+    </div>
+    <div class="row">
+      <div><input id="tripName" placeholder="Trip name, e.g. Surat to Gonda"></div>
+      <button id="saveTrip">Save trip</button>
+    </div>
+  </div>
+
   <div class="row">
     <div><label>From (code)</label><input id="from" placeholder="NDLS"></div>
     <div><label>To (code)</label><input id="to" placeholder="BCT"></div>
@@ -51,13 +67,16 @@
   <label>UPI ID</label><input id="upi" placeholder="name@okbank">
   <label class="check"><input type="checkbox" id="autoContinue" checked> Continue automatically after passengers</label>
   <small>Clicks Continue, waits for you to type the captcha, clicks Pay &amp; Book and sends the UPI request. You approve it in your UPI app.</small>
-  <label>Start time (24h, optional)</label>
-  <input id="start" placeholder="10:00:00">
-  <small>Search is clicked at this time once armed (AC 10:00, non-AC 11:00).</small>
+  <div class="row">
+    <div><label>Start time (24h, IRCTC time)</label><input id="start" placeholder="10:00:00"></div>
+    <div><label>Retry Book Now for (s)</label><input id="retrySec" type="number" min="0" max="120" placeholder="30"></div>
+  </div>
+  <small>Search is clicked at the start time on IRCTC's clock (AC 10:00, non-AC 11:00). If Book Now is not ready, availability is refreshed every 2 s for the retry time.</small>
   <div>
     <button id="save">Save</button>
     <button id="arm">Save &amp; arm</button>
     <button id="disarm">Disarm</button>
+    <button id="dry" title="Runs the whole flow but stops before Pay &amp; Book. Ignores the start time.">Dry run</button>
     <span id="msg"></span>
   </div>
 

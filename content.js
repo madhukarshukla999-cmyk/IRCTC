@@ -1,13 +1,13 @@
 // IRCTC Tatkal Autofill content script.
-// Selectors follow IRCTC's Angular/PrimeNG pages. If a step fails, the status box
-// and the DevTools console (prefix [Tatkal]) say which element was not found.
+// Selectors follow IRCTC's Angular/PrimeNG pages. Every step is written to the activity log in
+// the popup (and to the DevTools console with the prefix [Tatkal]).
 (() => {
   // The popup may inject this file into a tab that already has it; run only once per page.
   if (window.__tatkalAutofill) return;
   window.__tatkalAutofill = true;
 
   // ---------- activity log (shown in the popup) ----------
-  const MAX_LOG = 200;
+  const MAX_LOG = 300;
   let pending = [];
   let flushTimer = null;
   function activity(level, msg) {
@@ -26,7 +26,7 @@
   const LOG = (...a) => activity('info', a.map(String).join(' '));
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  async function waitFor(fn, timeout = 8000, step = 100) {
+  async function waitFor(fn, timeout = 8000, step = 50) {
     const end = Date.now() + timeout;
     while (Date.now() < end) {
       const v = fn();
@@ -52,7 +52,7 @@
   }
 
   // Type one character at a time so PrimeNG autocomplete fires its search.
-  async function typeSlowly(el, value, delay = 60) {
+  async function typeSlowly(el, value, delay = 30) {
     el.focus();
     el.click();
     setValue(el, '');
@@ -63,7 +63,8 @@
     }
   }
 
-  const getStore = () => new Promise((r) => chrome.storage.local.get(['config', 'armed'], r));
+  const getStore = () => new Promise((r) => chrome.storage.local.get(['config', 'armed', 'dryRun'], r));
+  let dryRun = false;
 
   // ---------- status panel ----------
   const panel = document.createElement('div');
@@ -72,9 +73,73 @@
     'font:12px system-ui;padding:8px 10px;border-radius:6px;max-width:280px;opacity:.92;cursor:pointer';
   panel.title = 'Click to run the step for this page now';
   document.documentElement.appendChild(panel);
-  const status = (t, level = 'step') => { panel.textContent = 'Tatkal Autofill: ' + t; activity(level, t); };
+  const status = (t, level = 'step') => { panel.textContent = 'Tatkal Autofill: ' + (dryRun ? '[dry run] ' : '') + t; activity(level, t); };
   activity('info', 'extension loaded on ' + location.pathname);
   panel.textContent = 'Tatkal Autofill: idle';
+
+  // ---------- server clock ----------
+  // Each response's Date header (1 s resolution) bounds the offset between IRCTC's clock and
+  // this computer's clock: offset is in [Date - received, Date + 1000 - sent]. Intersecting the
+  // bounds of several requests sent at different sub-second moments narrows it down.
+  let clockOffset = 0;
+  async function syncServerTime(samples = 6) {
+    let lo = -Infinity, hi = Infinity, best = null;
+    for (let i = 0; i < samples; i++) {
+      try {
+        const sent = Date.now();
+        const res = await fetch(`${location.origin}/nget/train-search?_t=${sent}`, { method: 'HEAD', cache: 'no-store' });
+        const received = Date.now();
+        const date = Date.parse(res.headers.get('date') || '');
+        if (Number.isNaN(date)) continue;
+        lo = Math.max(lo, date - received);
+        hi = Math.min(hi, date + 1000 - sent);
+        const mid = date + 500 - (sent + received) / 2;
+        if (!best || received - sent < best.rtt) best = { rtt: received - sent, mid };
+      } catch (e) { /* network hiccup: skip this sample */ }
+      await sleep(170 + Math.random() * 120); // spread samples across the second
+    }
+    if (!best) { activity('error', 'could not read IRCTC server time; using this computer\'s clock'); return false; }
+    let offset, err;
+    if (lo <= hi) { offset = (lo + hi) / 2; err = (hi - lo) / 2; } else { offset = best.mid; err = 500 + best.rtt / 2; }
+    clockOffset = Math.round(offset);
+    const sign = clockOffset >= 0 ? '+' : '-';
+    activity('info', `IRCTC clock is ${sign}${(Math.abs(clockOffset) / 1000).toFixed(2)}s vs this computer (±${(err / 1000).toFixed(2)}s)`);
+    return true;
+  }
+  const serverNow = () => Date.now() + clockOffset;
+
+  // ---------- IRCTC pop-ups ----------
+  // Only harmless notices are closed automatically. Anything about logging out or sessions,
+  // or with input fields (login), is left for the user.
+  const seenDialogs = new WeakSet();
+  function handleDialogs() {
+    const dialogs = $$('p-confirmdialog .ui-confirmdialog, .ui-dialog, .p-dialog, .modal.show .modal-content').filter(visible);
+    for (const d of dialogs) {
+      if (seenDialogs.has(d) || d.contains(panel)) continue;
+      const msg = text($('.ui-confirmdialog-message, .ui-dialog-content, .p-dialog-content, .modal-body', d) || d).slice(0, 200);
+      const buttons = $$('button', d).filter(visible).filter((b) => text(b));
+      if (!msg && !buttons.length) continue;
+      seenDialogs.add(d);
+      activity('info', `IRCTC pop-up: "${msg}"`);
+      if ($$('input[type="text"], input[type="password"]', d).some(visible)) {
+        activity('step', 'pop-up asks for input (login?). Fill it in yourself; the extension continues afterwards.');
+        continue;
+      }
+      if (/log ?out|session|expired|timed? ?out|sign ?in again/i.test(msg)) {
+        activity('error', 'session pop-up: answer it yourself');
+        continue;
+      }
+      let btn = null;
+      if (/food|catering/i.test(msg)) btn = buttons.find((b) => /^(OK|YES)$/i.test(text(b)));
+      else if (buttons.length === 1 && /^(OK|CLOSE|GOT IT|CONTINUE)$/i.test(text(buttons[0]))) btn = buttons[0];
+      if (btn) { activity('info', `closed pop-up with "${text(btn)}"`); btn.click(); }
+      else activity('step', 'pop-up needs your answer: ' + buttons.map(text).join(' / '));
+    }
+  }
+  // Watch for pop-ups while a step runs and for as long as the extension is armed.
+  let armedNow = false;
+  chrome.storage.local.get(['armed'], ({ armed }) => { armedNow = !!armed; });
+  setInterval(() => { if (running || armedNow) handleDialogs(); }, 400);
 
   // ---------- step 1: journey search ----------
   const AUTOCOMPLETE_ITEMS = 'li.ui-autocomplete-list-item, .ui-autocomplete-items li, .ui-autocomplete-panel li, li[role="option"]';
@@ -104,7 +169,7 @@
     if (!item) throw new Error(`no suggestion for station code ${code}`);
     item.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     item.click();
-    await sleep(300);
+    await waitFor(() => input.value.toUpperCase().length > code.length, 400, 20);
     LOG(id, '=', input.value);
   }
 
@@ -120,22 +185,21 @@
     input.focus();
     const picker = await waitFor(() => $('.ui-datepicker, .p-datepicker'), 2000);
     if (picker) {
+      const titleOf = () => text($('.ui-datepicker-title, .p-datepicker-title', picker)).toLowerCase();
       for (let i = 0; i < 14; i++) {
-        const title = text($('.ui-datepicker-title, .p-datepicker-title', picker)).toLowerCase();
-        if (title.includes(MONTHS[m - 1]) || title.includes(MONTHS[m - 1].slice(0, 3))) {
-          if (title.includes(String(y))) break;
-        }
+        const title = titleOf();
+        if ((title.includes(MONTHS[m - 1]) || title.includes(MONTHS[m - 1].slice(0, 3))) && title.includes(String(y))) break;
         const next = $('.ui-datepicker-next, .p-datepicker-next', picker);
         if (!next) break;
         next.click();
-        await sleep(200);
+        await waitFor(() => titleOf() !== title, 400, 20);
       }
       const cell = $$('td:not(.ui-datepicker-other-month):not(.p-datepicker-other-month) a, ' +
         'td:not(.ui-datepicker-other-month):not(.p-datepicker-other-month) span', picker)
         .find((a) => text(a) === String(d) && !a.classList.contains('ui-state-disabled') && !a.classList.contains('p-disabled'));
       if (cell) {
         cell.click();
-        await sleep(200);
+        await waitFor(() => input.value, 300, 20);
         LOG('date =', input.value);
         return;
       }
@@ -151,6 +215,7 @@
     '1A': 'AC FIRST CLASS', '2A': 'AC 2 TIER', '3A': 'AC 3 TIER', '3E': 'AC 3 ECONOMY',
     SL: 'SLEEPER', CC: 'AC CHAIR CAR', EC: 'EXEC. CHAIR CAR', '2S': 'SECOND SITTING',
   };
+  const DROPDOWN_ITEMS = 'p-dropdownitem li, li.ui-dropdown-item, li.p-dropdown-item, .ui-dropdown-items li';
 
   async function pickDropdown(name, matcher) {
     const root = await waitFor(() => $(`p-dropdown[formcontrolname="${name}"], p-dropdown#${name}, #${name}`));
@@ -161,15 +226,13 @@
       return setValue(root, opt.value);
     }
     ($('div.ui-dropdown, div.p-dropdown, .ui-dropdown-trigger, .p-dropdown-trigger', root) || root).click();
-    const item = await waitFor(() =>
-      $$('p-dropdownitem li, li.ui-dropdown-item, li.p-dropdown-item, .ui-dropdown-items li')
-        .filter(visible).find((li) => matcher(text(li).toUpperCase())), 3000);
+    const item = await waitFor(() => $$(DROPDOWN_ITEMS).filter(visible).find((li) => matcher(text(li).toUpperCase())), 3000);
     if (!item) {
       document.body.click();
       throw new Error(`no ${name} option matched`);
     }
     item.click();
-    await sleep(200);
+    await waitFor(() => !$$(DROPDOWN_ITEMS).some(visible), 300, 20);
     LOG(name, '=', text(item));
   }
 
@@ -185,6 +248,7 @@
 
   async function fillSearch(cfg) {
     status('filling journey');
+    const started = Date.now();
     let failed = 0;
     if (cfg.from && !(await tryField('From', () => pickStation('origin', cfg.from)))) failed++;
     if (cfg.to && !(await tryField('To', () => pickStation('destination', cfg.to)))) failed++;
@@ -196,6 +260,7 @@
     }
     if (cfg.quota && !(await tryField('Quota', () => pickDropdown('journeyQuota', (t) => t === cfg.quota.toUpperCase())))) failed++;
     if (failed) activity('error', `${failed} field(s) not filled; check the form before the search runs`);
+    activity('info', `journey filled in ${((Date.now() - started) / 1000).toFixed(1)}s`);
   }
 
   function clickSearch() {
@@ -215,25 +280,28 @@
     }) || null;
   }
 
-  function waitUntil(hhmmss) {
+  // Wait for hh:mm:ss on IRCTC's clock. Re-syncs once about 45 s before the target.
+  async function waitUntil(hhmmss) {
     const [h, m, s = 0] = hhmmss.split(':').map(Number);
-    return new Promise((resolve) => {
-      const tick = () => {
-        const now = new Date();
-        const target = new Date(now); target.setHours(h, m, s, 0);
-        const diff = target - now;
-        if (diff <= 0) return resolve();
-        panel.textContent = `Tatkal Autofill: waiting ${Math.ceil(diff / 1000)}s until ${hhmmss}`;
-        setTimeout(tick, Math.min(diff, 250));
-      };
-      tick();
-    });
+    const targetLocal = () => { const t = new Date(serverNow()); t.setHours(h, m, s, 0); return t.getTime(); };
+    const target = targetLocal();
+    if (target <= serverNow()) return activity('info', `${hhmmss} has already passed on IRCTC's clock; searching now`);
+    let resynced = target - serverNow() < 60000;
+    while (true) {
+      const diff = target - serverNow();
+      if (diff <= 0) break;
+      if (!resynced && diff < 45000) { resynced = true; await syncServerTime(4); continue; }
+      panel.textContent = `Tatkal Autofill: waiting ${Math.ceil(diff / 1000)}s until ${hhmmss} (IRCTC time)`;
+      await sleep(Math.min(diff, diff > 2000 ? 250 : 10));
+    }
   }
 
   async function searchStep(cfg) {
     await fillSearch(cfg);
-    if (cfg.start) {
-      activity('step', `waiting until ${cfg.start} to click Search (countdown in the box at the bottom right of the page)`);
+    if (cfg.start && dryRun) activity('info', `dry run: ignoring start time ${cfg.start}`);
+    else if (cfg.start) {
+      activity('step', `waiting until ${cfg.start} IRCTC time to click Search (countdown in the box at the bottom right of the page)`);
+      await syncServerTime();
       await waitUntil(cfg.start);
     }
     status('searching');
@@ -241,6 +309,8 @@
   }
 
   // ---------- step 2: train list ----------
+  // Picks the train, class and date, then waits for Book Now. If seats are not shown yet
+  // (common in the first seconds of Tatkal), it refreshes the class every 2 s up to the retry limit.
   async function trainListStep(cfg) {
     status('looking for train ' + cfg.train);
     const card = await waitFor(() => $$('app-train-avl-enq').find((c) =>
@@ -249,32 +319,56 @@
     card.scrollIntoView({ block: 'center' });
 
     // Pick the innermost matching element, since the click handler sits on div.pre-avl, not the td.
-    const matches = $$('.pre-avl, td', card).filter((el) => text(el).includes(`(${cfg.cls})`));
-    const classTile = matches.find((el) => !matches.some((o) => o !== el && el.contains(o)));
-    if (!classTile) return status(`class ${cfg.cls} not offered on ${cfg.train}`, 'error');
-    classTile.click();
-    status('checking availability');
-
+    const findClassTile = () => {
+      const matches = $$('.pre-avl, td', card).filter((el) => text(el).includes(`(${cfg.cls})`));
+      return matches.find((el) => !matches.some((o) => o !== el && el.contains(o)));
+    };
     const day = parseInt(cfg.date.split('/')[0], 10);
     const dayRe = new RegExp(`\\b0?${day}\\b`);
     const isDateCell = (el) => /\b(MON|TUE|WED|THU|FRI|SAT|SUN)\b/i.test(text(el.closest('td') || el));
-    const dateCell = await waitFor(() => {
+    const findDateCell = () => {
       const cells = $$('td.link div.pre-avl, div.pre-avl', card).filter((c) => !text(c).includes(`(${cfg.cls})`) && isDateCell(c));
       if (!cells.length) return null;
       return cells.find((c) => dayRe.test(text(c))) ||
         cells.find((c) => !/NOT AVAILABLE|REGRET/i.test(text(c.closest('td') || c)));
-    }, 15000, 200);
-    if (!dateCell) return status('availability did not load; click Refresh or the date yourself', 'error');
-    dateCell.click();
-    LOG('date cell =', text(dateCell.closest('td') || dateCell));
-
-    const book = await waitFor(() => {
+    };
+    const findBook = () => {
       const b = $$('button', card).find((x) => /BOOK NOW/i.test(text(x)));
       return b && !b.disabled && !b.classList.contains('disable-book') ? b : null;
-    }, 8000, 150);
-    if (!book) return status('Book Now not enabled (no seats or not open yet)', 'error');
-    status('booking');
-    book.click();
+    };
+
+    const retryMs = Math.max(0, Number(cfg.retrySec ?? 30)) * 1000;
+    const deadline = Date.now() + retryMs;
+    for (let attempt = 1; ; attempt++) {
+      const classTile = findClassTile();
+      if (!classTile) return status(`class ${cfg.cls} not offered on ${cfg.train}`, 'error');
+      // Remember the current cells so a refresh is not judged on the old, not-yet-updated ones.
+      const before = findDateCell();
+      const beforeText = before ? text(before.closest('td') || before) : null;
+      classTile.click();
+      status(attempt === 1 ? 'checking availability' : `refresh ${attempt}: checking availability`);
+      if (before) {
+        await waitFor(() => !before.isConnected || text(before.closest('td') || before) !== beforeText, 3000, 50);
+      }
+      // If nothing changed within 3 s, the availability is genuinely the same; use what is shown.
+      const dateCell = await waitFor(findDateCell, attempt === 1 ? 15000 : 3000, 50);
+      if (dateCell) {
+        dateCell.click();
+        const avail = text(dateCell.closest('td') || dateCell);
+        LOG('availability:', avail);
+        const book = await waitFor(findBook, 1500, 50);
+        if (book) {
+          status('booking');
+          book.click();
+          return;
+        }
+        if (/REGRET|NOT AVAILABLE|TRAIN DEPARTED/i.test(avail)) activity('info', 'no seats shown yet: ' + avail);
+      }
+      if (Date.now() >= deadline) {
+        return status(retryMs ? `Book Now still not enabled after ${retryMs / 1000}s of refreshing` : 'Book Now not enabled (no seats or not open yet)', 'error');
+      }
+      await sleep(2000);
+    }
   }
 
   // ---------- step 3: passengers ----------
@@ -305,12 +399,12 @@
     if (!box) return activity('error', `${label}: checkbox not found`);
     if (box.checked !== want) {
       box.click();
-      await sleep(150);
+      await waitFor(() => box.checked === want, 200, 20);
       // PrimeNG may keep the real input hidden; fall back to its visible box or label.
       if (box.checked !== want) {
         const alt = box.closest('p-checkbox, .ui-chkbox, div')?.querySelector('.ui-chkbox-box, label') ||
           $(`label[for="${id}"]`);
-        if (alt) { alt.click(); await sleep(150); }
+        if (alt) { alt.click(); await waitFor(() => box.checked === want, 200, 20); }
       }
     }
     activity(box.checked === want ? 'info' : 'error', `${label}: ${box.checked ? 'ticked' : 'not ticked'}`);
@@ -320,6 +414,7 @@
     const list = parsePassengers(cfg.passengers || '');
     if (!list.length) return status('no passengers saved', 'error');
     status('filling passengers');
+    const started = Date.now();
     await waitFor(() => $('app-passenger'), 15000);
     for (let i = 0; i < list.length; i++) {
       if ($$('app-passenger').length <= i) {
@@ -340,19 +435,20 @@
       selectOption($('select[formcontrolname="passengerBerthChoice"]', row), p.berth, BERTH_LABEL);
       selectOption($('select[formcontrolname="passengerFoodChoice"]', row), p.food, FOOD_LABEL);
       LOG('passenger', i + 1, p.name);
-      await sleep(150);
+      await sleep(30);
     }
     if (cfg.mobile) {
       const mob = $('input[formcontrolname="mobileNumber"], input#mobileNumber');
       if (mob) setValue(mob, cfg.mobile);
     }
-    activity('ok', 'passengers filled');
 
     // Booking options. Missing settings (saved by older versions) default to ticked.
     await setCheckbox('autoUpgradation', 'Consider for auto upgradation', cfg.autoUpgrade !== false);
     await setCheckbox('confirmberths', 'Book only if confirm berths are allotted', cfg.confirmOnly !== false);
+    activity('ok', `passengers filled in ${((Date.now() - started) / 1000).toFixed(1)}s`);
+    if (dryRun) checkPage();
 
-    if (!cfg.autoContinue) {
+    if (!cfg.autoContinue && !dryRun) {
       status('passengers filled. Check them, then click Continue yourself.', 'ok');
       return chrome.storage.local.set({ armed: false });
     }
@@ -365,7 +461,7 @@
     if (upiRadio) { upiRadio.click(); activity('info', 'payment mode: BHIM/UPI'); }
     else activity('info', 'UPI payment-mode option not found; leaving the default');
 
-    await sleep(400);
+    await sleep(150);
     const cont = forwardButton(/CONTINUE|PROCEED|NEXT/);
     if (!cont) return status('Continue button not found on passenger page', 'error');
     status('passenger Continue clicked');
@@ -374,7 +470,7 @@
 
   // ---------- step 4: review booking (captcha) ----------
   async function reviewStep(cfg) {
-    if (!cfg.autoContinue) return;
+    if (!cfg.autoContinue && !dryRun) return;
     const end = Date.now() + 3 * 60 * 1000;
     while (Date.now() < end && location.href.includes('reviewBooking')) {
       const input = await waitFor(() => $$('input#captcha, input[formcontrolname="captcha"], input[name="captcha"], input#nlpAnswer, input[placeholder*="aptcha"]').find(visible), 15000);
@@ -385,7 +481,7 @@
       // Wait until at least 4 characters and no typing for 1 second.
       let last = input.value, changed = Date.now();
       while (Date.now() < end && location.href.includes('reviewBooking')) {
-        await sleep(150);
+        await sleep(100);
         if (input.value !== last) { last = input.value; changed = Date.now(); }
         if (last.trim().length >= 4 && Date.now() - changed > 1000) break;
       }
@@ -395,29 +491,34 @@
       status('review Continue clicked');
       cont.click();
       // Wrong captcha: IRCTC stays on this page with a new captcha. Wait for the box to clear, then loop.
-      await waitFor(() => !location.href.includes('reviewBooking') || !input.isConnected || input.value === '', 6000, 200);
+      await waitFor(() => !location.href.includes('reviewBooking') || !input.isConnected || input.value === '', 6000, 100);
       if (location.href.includes('reviewBooking')) activity('error', 'still on review page (wrong captcha?); type the new one');
     }
   }
 
   // ---------- step 5: payment options ----------
   async function paymentStep(cfg) {
-    if (!cfg.autoContinue) return;
+    if (!cfg.autoContinue && !dryRun) return;
     status('choosing payment option');
-    await waitFor(() => $('.bank-type, #pay-type, button'), 15000);
-    await sleep(800);
+    await waitFor(() => $$('.bank-type, #pay-type').some(visible), 15000);
+    await sleep(200);
     const option = $$('#pay-type .bank-type, .bank-type').filter(visible)
       .find((o) => /BHIM|UPI|IPAY/i.test(text(o)));
-    if (option) { option.click(); activity('info', 'payment option: ' + text(option).slice(0, 60)); await sleep(600); }
+    if (option) { option.click(); activity('info', 'payment option: ' + text(option).slice(0, 60)); await sleep(200); }
     else activity('info', 'UPI payment option not found; using the default');
-    const pay = await waitFor(() => forwardButton(/PAY\s*&\s*BOOK|PAY AND BOOK|PAY/), 8000, 200);
+    const pay = await waitFor(() => forwardButton(/PAY\s*&\s*BOOK|PAY AND BOOK|PAY/), 8000, 100);
     if (!pay) return status('Pay & Book button not found', 'error');
+    if (dryRun) {
+      status(`dry run finished: found "${text(pay) || pay.value}" and did NOT click it. Nothing was booked or paid.`, 'ok');
+      return chrome.storage.local.set({ armed: false, dryRun: false });
+    }
     status('Pay & Book clicked');
     pay.click();
   }
 
   // ---------- step 6: IRCTC iPay gateway (UPI ID) ----------
   async function gatewayStep(cfg) {
+    if (dryRun) return status('dry run: on payment gateway, doing nothing', 'error');
     if (!cfg.autoContinue) return;
     if (!cfg.upi) return status('no UPI ID saved; enter it on this page yourself', 'error');
     status('filling UPI ID on payment gateway');
@@ -426,13 +527,13 @@
         const t = text(r.closest('label') || r.parentElement);
         return /UPI/i.test(t) && t.length < 150;
       }), 15000);
-    if (radio) { radio.click(); await sleep(800); }
+    if (radio) radio.click();
     const vpa = await waitFor(() => $$('input#mndtVpa, input[placeholder*="UPI" i], input[placeholder*="VPA" i]').find(visible), 10000);
     if (!vpa) return status('UPI ID box not found on gateway', 'error');
     vpa.focus();
     setValue(vpa, cfg.upi);
     vpa.dispatchEvent(new Event('blur', { bubbles: true }));
-    await sleep(600);
+    await sleep(200);
     const pay = $('input#autoDebitBtn, .payment-btn-autoDebit') || forwardButton(/PAY|PROCEED|VERIFY/);
     if (!pay) return status('Pay button not found on gateway', 'error');
     pay.click();
@@ -445,18 +546,20 @@
   let rerun = false;
   async function run(force, fromRouteChange = false) {
     if (running) { if (fromRouteChange) rerun = true; return; }
-    const { config: cfg, armed } = await getStore();
+    const { config: cfg, armed, dryRun: dry } = await getStore();
     if (!cfg) return status('no saved settings (open the extension popup)', 'error');
     if (!armed && !force) return status(armed === false ? 'disarmed' : 'idle (not armed)', 'info');
+    dryRun = !!dry;
     running = true;
     try {
+      handleDialogs();
       const url = location.href;
       if (location.hostname.includes('irctcipay')) await gatewayStep(cfg);
       else if (url.includes('train-list')) await trainListStep(cfg);
       else if (url.includes('psgninput')) await passengerStep(cfg);
       else if (url.includes('reviewBooking')) await reviewStep(cfg);
       else if (/bkgPaymentOptions|\/payment\//.test(url)) await paymentStep(cfg);
-      else if (url.includes('train-search')) await searchStep(cfg);
+      else if (url.includes('train-search')) { if (dryRun) checkPage(); await searchStep(cfg); }
       else status('this page is not handled: ' + location.pathname + ' (open the train search page)', 'error');
     } catch (e) {
       status('error: ' + e.message, 'error');
@@ -467,7 +570,7 @@
     }
   }
 
-  // ---------- page check (popup "Check page" button) ----------
+  // ---------- page check (popup "Check page" button, and every page in a dry run) ----------
   const CHECKS = {
     'train-search': {
       'From station box': 'input#origin, p-autocomplete#origin input',
@@ -514,18 +617,21 @@
     if (msg.type === 'ping') reply({ ok: true, page: location.pathname });
     else if (msg.type === 'check') { checkPage(); reply({ ok: true }); }
     else if (msg.type === 'run') { run(true); reply({ ok: true }); }
+    else if (msg.type === 'sync') { syncServerTime().then(() => reply({ ok: true, offset: clockOffset })); return true; }
   });
 
   // Start as soon as the user arms from the popup.
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === 'local' && changes.armed && changes.armed.newValue === true) run(false);
+    if (area !== 'local' || !changes.armed) return;
+    armedNow = !!changes.armed.newValue;
+    if (armedNow) run(false);
   });
 
   // IRCTC is a single-page app, so watch for route changes.
   let lastUrl = location.href;
   setInterval(() => {
     if (location.href !== lastUrl) { lastUrl = location.href; run(false, true); }
-  }, 300);
+  }, 200);
 
   panel.addEventListener('click', () => run(true));
   run(false);
