@@ -11,11 +11,20 @@ chrome.storage.local.get(['config', 'armed', 'activity'], ({ config = {}, armed,
   renderLog(activity);
 });
 
+// Accept "GD" or a pasted IRCTC name like "GONDA JN. - GD (GONDA)"; keep just the code.
+function stationCode(value) {
+  const v = value.toUpperCase().trim();
+  const m = v.match(/-\s*([A-Z0-9]{1,5})\b/);
+  return m ? m[1] : v.replace(/[^A-Z0-9]/g, '');
+}
+
 function collect() {
   const config = {};
   FIELDS.forEach((f) => (config[f] = $(f).value.trim()));
-  config.from = config.from.toUpperCase();
-  config.to = config.to.toUpperCase();
+  config.from = stationCode(config.from);
+  config.to = stationCode(config.to);
+  $('from').value = config.from;
+  $('to').value = config.to;
   config.cls = config.cls.toUpperCase();
   config.autoContinue = $('autoContinue').checked;
   return config;

@@ -79,15 +79,29 @@
   // ---------- step 1: journey search ----------
   const AUTOCOMPLETE_ITEMS = 'li.ui-autocomplete-list-item, .ui-autocomplete-items li, .ui-autocomplete-panel li, li[role="option"]';
 
-  async function pickStation(id, code) {
+  // Accept "GD" or a pasted IRCTC name like "GONDA JN. - GD (GONDA)"; return just the code.
+  function stationCode(value) {
+    const v = String(value).toUpperCase().trim();
+    const m = v.match(/-\s*([A-Z0-9]{1,5})\b/);
+    return m ? m[1] : v.replace(/[^A-Z0-9]/g, '');
+  }
+
+  async function pickStation(id, value) {
+    const code = stationCode(value);
+    if (!code) throw new Error(`empty station code "${value}"`);
     const input = await waitFor(() => $(`input#${id}, p-autocomplete#${id} input, #${id} input`));
     if (!input) throw new Error(`${id} station box not found`);
     await typeSlowly(input, code);
+    // Prefer "NAME - CODE" (exact code), then the code as a separate word anywhere.
+    const exact = new RegExp(`-\\s*${code}\\b`);
+    const word = new RegExp(`\\b${code}\\b`);
     const item = await waitFor(() => {
       const items = $$(AUTOCOMPLETE_ITEMS).filter(visible);
-      return items.find((li) => new RegExp(`\\b${code}\\b`).test(text(li).toUpperCase())) || null;
-    }, 5000);
-    if (!item) throw new Error(`no suggestion for station ${code}`);
+      if (!items.length) return null;
+      return items.find((li) => exact.test(text(li).toUpperCase())) ||
+        items.find((li) => word.test(text(li).toUpperCase())) || null;
+    }, 6000);
+    if (!item) throw new Error(`no suggestion for station code ${code}`);
     item.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     item.click();
     await sleep(300);
@@ -218,7 +232,10 @@
 
   async function searchStep(cfg) {
     await fillSearch(cfg);
-    if (cfg.start) await waitUntil(cfg.start);
+    if (cfg.start) {
+      activity('step', `waiting until ${cfg.start} to click Search (countdown in the box at the bottom right of the page)`);
+      await waitUntil(cfg.start);
+    }
     status('searching');
     clickSearch();
   }
@@ -263,8 +280,9 @@
   // ---------- step 3: passengers ----------
   function parsePassengers(raw) {
     return raw.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
-      const [name, age, gender, berth, food] = l.split(',').map((x) => (x || '').trim());
-      return { name, age, gender: (gender || 'M').toUpperCase()[0], berth: berth.toUpperCase(), food: food.toUpperCase()[0] || '' };
+      // Berth and food are optional, so missing columns default to ''.
+      const [name = '', age = '', gender = '', berth = '', food = ''] = l.split(',').map((x) => x.trim());
+      return { name, age, gender: (gender || 'M').toUpperCase()[0], berth: berth.toUpperCase(), food: (food.toUpperCase()[0] || '') };
     });
   }
 
