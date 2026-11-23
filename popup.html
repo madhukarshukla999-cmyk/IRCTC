@@ -29,6 +29,11 @@
   #log .info { color: #555; }
   #log .t { color: #999; margin-right: 4px; }
   #dry { background: #fff7e0; }
+  details.login { margin-top: 8px; border: 1px solid #dde; border-radius: 4px; padding: 6px; background: #f6f7fb; }
+  details.login summary { font-weight: 600; cursor: pointer; }
+  #loginState { font-weight: normal; margin-left: 6px; }
+  #loginState.on { color: #070; }
+  #loginState.off { color: #a60; }
 </style>
 </head>
 <body>
@@ -43,6 +48,25 @@
       <button id="saveTrip">Save trip</button>
     </div>
   </div>
+
+  <details class="login" id="loginBox">
+    <summary>IRCTC login <span id="loginState"></span></summary>
+    <div class="row">
+      <div><label>User ID</label><input id="loginUser" autocomplete="off"></div>
+      <div><label>Password</label><input id="loginPass" type="password" autocomplete="new-password"></div>
+    </div>
+    <label>PIN (to encrypt the password; 6+ characters recommended)</label>
+    <input id="loginPin" type="password" autocomplete="off">
+    <div>
+      <button id="saveLogin">Save login</button>
+      <button id="unlock">Unlock</button>
+      <button id="lock">Lock</button>
+      <button id="forgetLogin">Forget</button>
+    </div>
+    <small>The password is stored encrypted with your PIN. Unlock it once per browser session; it is
+      kept in memory only and cleared when the browser closes. On the login pop-up the extension fills
+      your user ID and password; you type the captcha and Sign In is clicked for you.</small>
+  </details>
 
   <div class="row">
     <div><label>From (code)</label><input id="from" placeholder="NDLS"></div>

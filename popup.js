@@ -1,7 +1,12 @@
 const FIELDS = ['from', 'to', 'date', 'train', 'cls', 'quota', 'mobile', 'passengers', 'upi', 'start', 'retrySec'];
 const CHECKS = ['autoContinue', 'autoUpgrade', 'confirmOnly']; // default: ticked
 const $ = (id) => document.getElementById(id);
-const say = (t) => { $('msg').textContent = t; setTimeout(() => ($('msg').textContent = ''), 2500); };
+let sayTimer = null;
+const say = (t) => {
+  $('msg').textContent = t;
+  clearTimeout(sayTimer);
+  sayTimer = setTimeout(() => ($('msg').textContent = ''), 2500);
+};
 const IRCTC = /^https:\/\/(www\.irctc\.co\.in|([a-z0-9-]+\.)?irctcipay\.com)\//;
 
 // ---------- settings ----------
@@ -98,6 +103,81 @@ $('deleteTrip').onclick = () => {
   });
 };
 
+// ---------- IRCTC login (password encrypted with a PIN) ----------
+// savedLogin in chrome.storage.local: { user, salt, iv, data } with the password AES-GCM encrypted
+// using a key derived from the PIN (PBKDF2-SHA-256). The unlocked password is put only in
+// chrome.storage.session, which is memory-only and not readable by content scripts.
+const enc = new TextEncoder();
+const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
+const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+
+async function pinKey(pin, salt) {
+  const base = await crypto.subtle.importKey('raw', enc.encode(pin), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 310000, hash: 'SHA-256' },
+    base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+
+async function showLoginState() {
+  const [{ savedLogin }, { login }] = await Promise.all([
+    chrome.storage.local.get('savedLogin'), chrome.storage.session.get('login')]);
+  const el = $('loginState');
+  if (!savedLogin) { el.textContent = '(not saved)'; el.className = ''; return; }
+  $('loginUser').value = savedLogin.user;
+  const unlocked = login?.user === savedLogin.user;
+  el.textContent = `(${savedLogin.user}: ${unlocked ? 'unlocked' : 'locked'})`;
+  el.className = unlocked ? 'on' : 'off';
+}
+
+$('saveLogin').onclick = async () => {
+  const user = $('loginUser').value.trim();
+  const password = $('loginPass').value;
+  const pin = $('loginPin').value;
+  if (!user || !password) return say('Enter user ID and password');
+  if (pin.length < 4) return say('PIN must be at least 4 characters');
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const data = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await pinKey(pin, salt), enc.encode(password));
+  await chrome.storage.local.set({ savedLogin: { user, salt: b64(salt), iv: b64(iv), data: b64(data) } });
+  await chrome.storage.session.set({ login: { user, password } });
+  $('loginPass').value = '';
+  $('loginPin').value = '';
+  say('Login saved and unlocked');
+  addLog('info', `login saved for ${user} (password encrypted)`);
+  showLoginState();
+};
+
+$('unlock').onclick = async () => {
+  const { savedLogin } = await chrome.storage.local.get('savedLogin');
+  if (!savedLogin) return say('No saved login');
+  try {
+    const key = await pinKey($('loginPin').value, unb64(savedLogin.salt));
+    const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(savedLogin.iv) }, key, unb64(savedLogin.data));
+    await chrome.storage.session.set({ login: { user: savedLogin.user, password: new TextDecoder().decode(plain) } });
+    $('loginPin').value = '';
+    say('Unlocked');
+    addLog('info', `login unlocked for ${savedLogin.user}`);
+  } catch {
+    say('Wrong PIN');
+    addLog('error', 'unlock failed: wrong PIN');
+  }
+  showLoginState();
+};
+
+$('lock').onclick = async () => {
+  await chrome.storage.session.remove('login');
+  say('Locked');
+  showLoginState();
+};
+
+$('forgetLogin').onclick = async () => {
+  await chrome.storage.session.remove('login');
+  await chrome.storage.local.remove('savedLogin');
+  $('loginUser').value = '';
+  say('Login removed');
+  addLog('info', 'saved login removed');
+  showLoginState();
+};
+
 // ---------- current tab ----------
 async function activeTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -192,3 +272,4 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 $('ver').textContent = 'Version ' + chrome.runtime.getManifest().version;
 showTabInfo();
+showLoginState();

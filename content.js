@@ -116,6 +116,7 @@
     const dialogs = $$('p-confirmdialog .ui-confirmdialog, .ui-dialog, .p-dialog, .modal.show .modal-content').filter(visible);
     for (const d of dialogs) {
       if (seenDialogs.has(d) || d.contains(panel)) continue;
+      if ($(LOGIN_USER, d)) continue; // the login form is handled by handleLogin
       const msg = text($('.ui-confirmdialog-message, .ui-dialog-content, .p-dialog-content, .modal-body', d) || d).slice(0, 200);
       const buttons = $$('button', d).filter(visible).filter((b) => text(b));
       if (!msg && !buttons.length) continue;
@@ -136,10 +137,72 @@
       else activity('step', 'pop-up needs your answer: ' + buttons.map(text).join(' / '));
     }
   }
+  // ---------- IRCTC login ----------
+  // When a login form is visible, fill the saved user ID and password (if unlocked in the popup),
+  // focus the captcha, and click Sign In after the user has typed it. Never logs the password.
+  const LOGIN_USER = 'input[formcontrolname="userid"], input[placeholder="User Name"]';
+  const LOGIN_PASS = 'input[formcontrolname="password"], input[type="password"]';
+  const LOGIN_CAPTCHA = 'input[formcontrolname="captcha"], input#captcha, input#nlpAnswer, input[placeholder*="aptcha"]';
+  const handledLogins = new WeakSet();
+  let loginBusy = false;
+
+  async function handleLogin() {
+    if (loginBusy) return;
+    const user = $$(LOGIN_USER).find(visible);
+    if (!user || handledLogins.has(user)) return;
+    handledLogins.add(user);
+    loginBusy = true;
+    try {
+      const form = user.closest('form, app-login, .ui-dialog, .modal-content') || document;
+      const pass = $$(LOGIN_PASS, form).find(visible);
+      let login;
+      try { login = await chrome.runtime.sendMessage({ type: 'getLogin' }); } catch (e) { login = { error: e.message }; }
+      if (!login || login.none) return activity('info', 'login form shown; no saved login (add one in the popup to fill it automatically)');
+      if (login.error) return activity('error', 'could not get saved login: ' + login.error);
+      setValue(user, login.user);
+      user.dispatchEvent(new Event('blur', { bubbles: true }));
+      if (login.locked) return activity('error', `login: filled user ID ${login.user}; password is locked. Open the popup and click Unlock, or type it yourself.`);
+      if (!pass) return activity('error', 'login: password box not found');
+      setValue(pass, login.password);
+      pass.dispatchEvent(new Event('blur', { bubbles: true }));
+      activity('ok', `login: filled user ID ${login.user} and password`);
+
+      const captcha = await waitFor(() => $$(LOGIN_CAPTCHA, form).find(visible), 5000);
+      if (!captcha) return activity('step', 'login: no captcha box found; click Sign In yourself');
+      captcha.scrollIntoView({ block: 'center' });
+      captcha.focus();
+      status('type the login captcha; Sign In is clicked when you stop typing');
+      const end = Date.now() + 3 * 60 * 1000;
+      let last = captcha.value, changed = Date.now();
+      while (Date.now() < end && captcha.isConnected && visible(captcha)) {
+        await sleep(100);
+        if (captcha.value !== last) { last = captcha.value; changed = Date.now(); }
+        if (last.trim().length >= 4 && Date.now() - changed > 1000) break;
+      }
+      if (!captcha.isConnected || !visible(captcha)) return activity('info', 'login form closed');
+      const signIn = $$('button', form).filter(visible).find((b) => /SIGN ?IN|LOG ?IN/i.test(text(b)) && !b.disabled);
+      if (!signIn) return activity('error', 'login: Sign In button not found; click it yourself');
+      signIn.click();
+      activity('step', 'login: Sign In clicked');
+      // Wrong captcha or password: the form stays open with a new captcha. Allow another try.
+      await waitFor(() => !user.isConnected || !visible(user) || captcha.value === '', 6000, 100);
+      if (user.isConnected && visible(user)) {
+        activity('error', 'login form still open (wrong captcha or password?); type the new captcha');
+        handledLogins.delete(user);
+      } else activity('ok', 'logged in');
+    } finally {
+      loginBusy = false;
+    }
+  }
+
   // Watch for pop-ups while a step runs and for as long as the extension is armed.
+  // The login form is handled whenever it appears.
   let armedNow = false;
   chrome.storage.local.get(['armed'], ({ armed }) => { armedNow = !!armed; });
-  setInterval(() => { if (running || armedNow) handleDialogs(); }, 400);
+  setInterval(() => {
+    if (location.hostname.includes('irctc.co.in')) handleLogin();
+    if (running || armedNow) handleDialogs();
+  }, 400);
 
   // ---------- step 1: journey search ----------
   const AUTOCOMPLETE_ITEMS = 'li.ui-autocomplete-list-item, .ui-autocomplete-items li, .ui-autocomplete-panel li, li[role="option"]';

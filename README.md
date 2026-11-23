@@ -38,6 +38,23 @@ A small status box at the bottom right shows progress. Click it to run the step 
 Passenger format, one per line: `Name, Age, M/F/T, Berth, Food`. Berth (LB, MB, UB, SL, SU, WS)
 and food (V, N, D = no food) are optional. Dates use `DD/MM/YYYY`.
 
+## IRCTC login
+Open **IRCTC login** at the top of the popup, enter your user ID, password and a PIN, and click
+**Save login**. When IRCTC shows its login form (for example after Book Now), the extension fills
+your user ID and password and puts the cursor in the captcha box. **You type the captcha**; Sign In
+is clicked once you stop typing. If the captcha was wrong, type the new one.
+
+How the password is kept:
+- It is encrypted with your PIN (AES-256-GCM, key from PBKDF2-SHA-256) before it is saved.
+  Only the encrypted form is stored on disk.
+- **Unlock** with your PIN once per browser session. The unlocked password is kept in memory only
+  (`chrome.storage.session`) and is cleared when the browser closes or when you click **Lock**.
+- The page gets it from the extension's background worker, which answers only IRCTC tabs.
+- **Forget** deletes the saved login. Use a PIN of 6+ characters; a short PIN is easier to guess
+  for someone who has access to your computer.
+
+If the login is locked, only the user ID is filled.
+
 ## Saved trips
 At the top of the popup: type a name and click **Save trip** to store the current form. Pick a
 trip and click **Load** to fill the form with it (it also becomes the active settings), or
@@ -83,4 +100,4 @@ before the extension was installed or reloaded, the popup injects the script aut
   in `content.js`.
 - The extension does not hide itself from IRCTC and does not solve captchas or approve payments.
 - IRCTC's terms restrict automated booking. Use at your own risk.
-- Settings are stored only in `chrome.storage.local`. No credentials are stored.
+- Settings are stored only in `chrome.storage.local`. The IRCTC password is stored only in encrypted form (see "IRCTC login").
