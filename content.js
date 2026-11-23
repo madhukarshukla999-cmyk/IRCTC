@@ -46,7 +46,10 @@
     const item = await waitFor(() =>
       [...document.querySelectorAll('.ui-autocomplete-items li, .ui-autocomplete-panel li')]
         .find((li) => li.textContent.toUpperCase().includes('- ' + code) || li.textContent.toUpperCase().includes(code)));
-    if (item) item.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })) || item.click();
+    if (!item) throw new Error('station ' + code + ' not in suggestions');
+    item.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    item.click();
+    await sleep(300);
   }
 
   async function pickDropdown(rootSel, matcher) {
@@ -163,10 +166,13 @@
   }
 
   // ---------- router ----------
+  let running = false;
   async function run(force) {
+    if (running) return;
     const { config: cfg, armed } = await getStore();
     if (!cfg) return status('no saved settings (open the extension popup)');
-    if (!armed && !force) return;
+    if (!armed && !force) return status(armed === false ? 'disarmed' : 'idle');
+    running = true;
     try {
       const url = location.href;
       if (url.includes('train-list')) await trainListStep(cfg);
@@ -175,8 +181,15 @@
       else status('open the train search page');
     } catch (e) {
       status('error: ' + e.message);
+    } finally {
+      running = false;
     }
   }
+
+  // Start immediately when the user arms from the popup on an already-open page.
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.armed && changes.armed.newValue === true) run(false);
+  });
 
   // The site is a single-page app, so watch for route changes.
   let lastUrl = location.href;
