@@ -7,6 +7,8 @@ const IRCTC = /^https:\/\/(www\.irctc\.co\.in|([a-z0-9-]+\.)?irctcipay\.com)\//;
 chrome.storage.local.get(['config', 'armed', 'activity'], ({ config = {}, armed, activity = [] }) => {
   FIELDS.forEach((f) => { if (config[f] != null) $(f).value = config[f]; });
   $('autoContinue').checked = config.autoContinue !== false;
+  $('autoUpgrade').checked = config.autoUpgrade !== false;
+  $('confirmOnly').checked = config.confirmOnly !== false;
   if (armed) say('Armed');
   renderLog(activity);
 });
@@ -27,6 +29,8 @@ function collect() {
   $('to').value = config.to;
   config.cls = config.cls.toUpperCase();
   config.autoContinue = $('autoContinue').checked;
+  config.autoUpgrade = $('autoUpgrade').checked;
+  config.confirmOnly = $('confirmOnly').checked;
   return config;
 }
 

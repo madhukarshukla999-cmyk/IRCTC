@@ -15,7 +15,9 @@ You still log in, solve the captcha, and approve payment yourself.
 3. The extension fills the search form, waits for the start time (if set), and clicks Search.
    A field it cannot fill is logged and skipped; Search is still clicked.
 4. On the train list it selects your train, class and date and clicks Book Now.
-5. On the passenger page it fills the passengers and mobile number.
+5. On the passenger page it fills the passengers and mobile number, and sets the booking options
+   "Consider for auto upgradation" and "Book only if confirm berths are allotted" (both ticked by
+   default; change them in the popup).
 
 With "Continue automatically after passengers" on (default), it then:
 

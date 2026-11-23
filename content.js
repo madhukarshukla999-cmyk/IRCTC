@@ -299,6 +299,23 @@
     if (opt) setValue(sel, opt.value);
   }
 
+  // Set an IRCTC checkbox to the wanted state. Only clicks when it differs, so it never untoggles.
+  async function setCheckbox(id, label, want) {
+    const box = $(`input#${id}`);
+    if (!box) return activity('error', `${label}: checkbox not found`);
+    if (box.checked !== want) {
+      box.click();
+      await sleep(150);
+      // PrimeNG may keep the real input hidden; fall back to its visible box or label.
+      if (box.checked !== want) {
+        const alt = box.closest('p-checkbox, .ui-chkbox, div')?.querySelector('.ui-chkbox-box, label') ||
+          $(`label[for="${id}"]`);
+        if (alt) { alt.click(); await sleep(150); }
+      }
+    }
+    activity(box.checked === want ? 'info' : 'error', `${label}: ${box.checked ? 'ticked' : 'not ticked'}`);
+  }
+
   async function passengerStep(cfg) {
     const list = parsePassengers(cfg.passengers || '');
     if (!list.length) return status('no passengers saved', 'error');
@@ -330,6 +347,10 @@
       if (mob) setValue(mob, cfg.mobile);
     }
     activity('ok', 'passengers filled');
+
+    // Booking options. Missing settings (saved by older versions) default to ticked.
+    await setCheckbox('autoUpgradation', 'Consider for auto upgradation', cfg.autoUpgrade !== false);
+    await setCheckbox('confirmberths', 'Book only if confirm berths are allotted', cfg.confirmOnly !== false);
 
     if (!cfg.autoContinue) {
       status('passengers filled. Check them, then click Continue yourself.', 'ok');
@@ -468,6 +489,8 @@
       'Gender select': 'select[formcontrolname="passengerGender"]',
       'Berth select': 'select[formcontrolname="passengerBerthChoice"]',
       'Mobile box': 'input[formcontrolname="mobileNumber"], input#mobileNumber',
+      'Auto upgradation checkbox': 'input#autoUpgradation',
+      'Confirm berths only checkbox': 'input#confirmberths',
     },
   };
 
