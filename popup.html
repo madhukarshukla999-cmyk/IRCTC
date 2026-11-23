@@ -30,8 +30,8 @@
   </div>
   <label>Mobile number</label><input id="mobile">
   <label>Passengers</label>
-  <textarea id="passengers" rows="4" placeholder="Name, Age, M/F/T, Berth&#10;Ravi Kumar, 34, M, LB"></textarea>
-  <small>One per line. Berth is optional: LB, MB, UB, SL, SU, WS.</small>
+  <textarea id="passengers" rows="4" placeholder="Name, Age, M/F/T, Berth, Food&#10;Ravi Kumar, 34, M, LB, V"></textarea>
+  <small>One per line. Berth (LB, MB, UB, SL, SU, WS) and food (V, N, D = no food) are optional.</small>
   <label>Start time (24h, optional)</label>
   <input id="start" placeholder="10:00:00">
   <small>Search is clicked at this time once armed (AC 10:00, non-AC 11:00).</small>
@@ -41,6 +41,7 @@
     <button id="disarm">Disarm</button>
     <span id="msg"></span>
   </div>
+  <p><small id="ver"></small></p>
   <script src="popup.js"></script>
 </body>
 </html>

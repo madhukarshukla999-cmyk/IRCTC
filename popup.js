@@ -19,3 +19,4 @@ function collect() {
 $('save').onclick = () => chrome.storage.local.set({ config: collect() }, () => say('Saved'));
 $('arm').onclick = () => chrome.storage.local.set({ config: collect(), armed: true }, () => say('Armed'));
 $('disarm').onclick = () => chrome.storage.local.set({ armed: false }, () => say('Disarmed'));
+$('ver').textContent = 'Version ' + chrome.runtime.getManifest().version;

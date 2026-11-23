@@ -1,6 +1,8 @@
 // IRCTC Tatkal Autofill content script.
-// Selectors target IRCTC's Angular site and may need updating when it changes.
+// Selectors follow IRCTC's Angular/PrimeNG pages. If a step fails, the status box
+// and the DevTools console (prefix [Tatkal]) say which element was not found.
 (() => {
+  const LOG = (...a) => console.log('[Tatkal]', ...a);
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   async function waitFor(fn, timeout = 8000, step = 100) {
@@ -13,6 +15,11 @@
     return null;
   }
 
+  const visible = (el) => !!el && el.offsetParent !== null;
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+  const text = (el) => (el ? el.textContent.replace(/\s+/g, ' ').trim() : '');
+
   function setValue(el, value) {
     const proto = el instanceof HTMLSelectElement ? HTMLSelectElement.prototype
       : el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype
@@ -20,61 +27,133 @@
     Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value);
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
-    el.dispatchEvent(new Event('blur', { bubbles: true }));
   }
 
-  const byText = (selector, text, root = document) =>
-    [...root.querySelectorAll(selector)].find((e) => e.textContent.toLowerCase().includes(text.toLowerCase()));
+  // Type one character at a time so PrimeNG autocomplete fires its search.
+  async function typeSlowly(el, value, delay = 60) {
+    el.focus();
+    el.click();
+    setValue(el, '');
+    for (let i = 1; i <= value.length; i++) {
+      setValue(el, value.slice(0, i));
+      el.dispatchEvent(new KeyboardEvent('keyup', { key: value[i - 1], bubbles: true }));
+      await sleep(delay);
+    }
+  }
 
   const getStore = () => new Promise((r) => chrome.storage.local.get(['config', 'armed'], r));
 
   // ---------- status panel ----------
   const panel = document.createElement('div');
   panel.style.cssText =
-    'position:fixed;bottom:12px;right:12px;z-index:99999;background:#222;color:#fff;' +
-    'font:12px system-ui;padding:8px 10px;border-radius:6px;max-width:260px;opacity:.92';
-  panel.textContent = 'Tatkal Autofill: idle';
+    'position:fixed;bottom:12px;right:12px;z-index:2147483647;background:#222;color:#fff;' +
+    'font:12px system-ui;padding:8px 10px;border-radius:6px;max-width:280px;opacity:.92;cursor:pointer';
+  panel.title = 'Click to run the step for this page now';
   document.documentElement.appendChild(panel);
-  const status = (t) => (panel.textContent = 'Tatkal Autofill: ' + t);
+  const status = (t) => { panel.textContent = 'Tatkal Autofill: ' + t; LOG(t); };
+  status('idle');
 
   // ---------- step 1: journey search ----------
-  async function pickStation(rootSel, code) {
-    const input = await waitFor(() => document.querySelector(rootSel + ' input'));
-    if (!input) throw new Error('station input not found: ' + rootSel);
-    input.focus();
-    setValue(input, code);
-    const item = await waitFor(() =>
-      [...document.querySelectorAll('.ui-autocomplete-items li, .ui-autocomplete-panel li')]
-        .find((li) => li.textContent.toUpperCase().includes('- ' + code) || li.textContent.toUpperCase().includes(code)));
-    if (!item) throw new Error('station ' + code + ' not in suggestions');
+  const AUTOCOMPLETE_ITEMS = 'li.ui-autocomplete-list-item, .ui-autocomplete-items li, .ui-autocomplete-panel li, li[role="option"]';
+
+  async function pickStation(id, code) {
+    const input = await waitFor(() => $(`input#${id}, p-autocomplete#${id} input, #${id} input`));
+    if (!input) throw new Error(`${id} station box not found`);
+    await typeSlowly(input, code);
+    const item = await waitFor(() => {
+      const items = $$(AUTOCOMPLETE_ITEMS).filter(visible);
+      return items.find((li) => new RegExp(`\\b${code}\\b`).test(text(li).toUpperCase())) || null;
+    }, 5000);
+    if (!item) throw new Error(`no suggestion for station ${code}`);
     item.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     item.click();
     await sleep(300);
+    LOG(id, '=', input.value);
   }
 
-  async function pickDropdown(rootSel, matcher) {
-    const root = await waitFor(() => document.querySelector(rootSel));
-    if (!root) throw new Error('dropdown not found: ' + rootSel);
-    (root.querySelector('div[role="button"], .ui-dropdown-trigger, div') || root).click();
+  const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july',
+    'august', 'september', 'october', 'november', 'december'];
+
+  async function pickDate(ddmmyyyy) {
+    const [d, m, y] = ddmmyyyy.split('/').map(Number);
+    if (!d || !m || !y) throw new Error('date must be DD/MM/YYYY');
+    const input = await waitFor(() => $('p-calendar input, input#jDate'));
+    if (!input) throw new Error('date box not found');
+    input.click();
+    input.focus();
+    const picker = await waitFor(() => $('.ui-datepicker, .p-datepicker'), 2000);
+    if (picker) {
+      for (let i = 0; i < 14; i++) {
+        const title = text($('.ui-datepicker-title, .p-datepicker-title', picker)).toLowerCase();
+        if (title.includes(MONTHS[m - 1]) || title.includes(MONTHS[m - 1].slice(0, 3))) {
+          if (title.includes(String(y))) break;
+        }
+        const next = $('.ui-datepicker-next, .p-datepicker-next', picker);
+        if (!next) break;
+        next.click();
+        await sleep(200);
+      }
+      const cell = $$('td:not(.ui-datepicker-other-month):not(.p-datepicker-other-month) a, ' +
+        'td:not(.ui-datepicker-other-month):not(.p-datepicker-other-month) span', picker)
+        .find((a) => text(a) === String(d) && !a.classList.contains('ui-state-disabled') && !a.classList.contains('p-disabled'));
+      if (cell) {
+        cell.click();
+        await sleep(200);
+        LOG('date =', input.value);
+        return;
+      }
+      LOG('day not clickable in calendar, typing date instead');
+    }
+    // Fallback: type the date (works when the input is not read-only).
+    setValue(input, ddmmyyyy);
+    input.dispatchEvent(new Event('blur', { bubbles: true }));
+    LOG('date typed =', input.value);
+  }
+
+  const CLASS_NAMES = {
+    '1A': 'AC FIRST CLASS', '2A': 'AC 2 TIER', '3A': 'AC 3 TIER', '3E': 'AC 3 ECONOMY',
+    SL: 'SLEEPER', CC: 'AC CHAIR CAR', EC: 'EXEC. CHAIR CAR', '2S': 'SECOND SITTING',
+  };
+
+  async function pickDropdown(name, matcher) {
+    const root = await waitFor(() => $(`p-dropdown[formcontrolname="${name}"], p-dropdown#${name}, #${name}`));
+    if (!root) throw new Error(`${name} dropdown not found`);
+    if (root.tagName === 'SELECT') {
+      const opt = [...root.options].find((o) => matcher(o.text.toUpperCase()));
+      if (!opt) throw new Error(`no ${name} option matched`);
+      return setValue(root, opt.value);
+    }
+    ($('div.ui-dropdown, div.p-dropdown, .ui-dropdown-trigger, .p-dropdown-trigger', root) || root).click();
     const item = await waitFor(() =>
-      [...document.querySelectorAll('p-dropdownitem li, .ui-dropdown-items li')].find((li) => matcher(li.textContent)));
-    if (!item) throw new Error('dropdown option not found in ' + rootSel);
+      $$('p-dropdownitem li, li.ui-dropdown-item, li.p-dropdown-item, .ui-dropdown-items li')
+        .filter(visible).find((li) => matcher(text(li).toUpperCase())), 3000);
+    if (!item) {
+      document.body.click();
+      throw new Error(`no ${name} option matched`);
+    }
     item.click();
+    await sleep(200);
+    LOG(name, '=', text(item));
   }
 
   async function fillSearch(cfg) {
     status('filling journey');
-    await pickStation('#origin', cfg.from);
-    await pickStation('#destination', cfg.to);
-    const date = await waitFor(() => document.querySelector('#jDate input'));
-    if (date) { date.focus(); setValue(date, cfg.date); }
-    if (cfg.cls) await pickDropdown('#journeyClass', (t) => t.includes('(' + cfg.cls + ')'));
-    if (cfg.quota) await pickDropdown('#journeyQuota', (t) => t.trim().toUpperCase() === cfg.quota.toUpperCase());
+    await pickStation('origin', cfg.from);
+    await pickStation('destination', cfg.to);
+    await pickDate(cfg.date);
+    document.body.click();
+    if (cfg.cls) {
+      const full = CLASS_NAMES[cfg.cls];
+      await pickDropdown('journeyClass', (t) => t.includes(`(${cfg.cls})`) || (full && t.includes(full)));
+    }
+    if (cfg.quota) await pickDropdown('journeyQuota', (t) => t === cfg.quota.toUpperCase());
   }
 
   function clickSearch() {
-    const btn = document.querySelector('button.search_btn') || byText('button', 'Search');
-    if (btn) btn.click();
+    const btn = $('button.search_btn.train_Search') || $('button.search_btn') ||
+      $$('button').find((b) => /SEARCH|FIND TRAINS/.test(text(b).toUpperCase()));
+    if (!btn) throw new Error('Search button not found');
+    btn.click();
   }
 
   function waitUntil(hhmmss) {
@@ -85,7 +164,7 @@
         const target = new Date(now); target.setHours(h, m, s, 0);
         const diff = target - now;
         if (diff <= 0) return resolve();
-        status('waiting ' + Math.ceil(diff / 1000) + 's until ' + hhmmss);
+        panel.textContent = `Tatkal Autofill: waiting ${Math.ceil(diff / 1000)}s until ${hhmmss}`;
         setTimeout(tick, Math.min(diff, 250));
       };
       tick();
@@ -102,66 +181,92 @@
   // ---------- step 2: train list ----------
   async function trainListStep(cfg) {
     status('looking for train ' + cfg.train);
-    const card = await waitFor(() =>
-      [...document.querySelectorAll('app-train-avl-enq')].find((c) => c.textContent.includes('(' + cfg.train + ')')), 20000);
-    if (!card) return status('train ' + cfg.train + ' not found');
-    const tile = byText('.pre-avl, .tbis-div td', '(' + cfg.cls + ')', card);
-    if (tile) tile.click();
-    await sleep(500);
-    // pick the date tile that matches the searched date, else the first available one
+    const card = await waitFor(() => $$('app-train-avl-enq').find((c) =>
+      text($('.train-heading strong', c) || c).includes(cfg.train)), 20000);
+    if (!card) return status(`train ${cfg.train} not in results`);
+    card.scrollIntoView({ block: 'center' });
+
+    // Pick the innermost matching element, since the click handler sits on div.pre-avl, not the td.
+    const matches = $$('.pre-avl, td', card).filter((el) => text(el).includes(`(${cfg.cls})`));
+    const classTile = matches.find((el) => !matches.some((o) => o !== el && el.contains(o)));
+    if (!classTile) return status(`class ${cfg.cls} not offered on ${cfg.train}`);
+    classTile.click();
+    status('checking availability');
+
     const day = parseInt(cfg.date.split('/')[0], 10);
-    const dateTile = await waitFor(() =>
-      [...card.querySelectorAll('td .pre-avl, td')].find((t) => new RegExp('\\b0?' + day + '\\b').test(t.textContent) && /,|\w{3}/.test(t.textContent)));
-    if (dateTile) dateTile.click();
-    await sleep(500);
-    const book = await waitFor(() => byText('button', 'Book Now', card), 6000);
-    if (book && !book.disabled) { status('booking'); book.click(); }
-    else status('Book Now not available; check seats');
+    const dayRe = new RegExp(`\\b0?${day}\\b`);
+    const isDateCell = (el) => /\b(MON|TUE|WED|THU|FRI|SAT|SUN)\b/i.test(text(el.closest('td') || el));
+    const dateCell = await waitFor(() => {
+      const cells = $$('td.link div.pre-avl, div.pre-avl', card).filter((c) => !text(c).includes(`(${cfg.cls})`) && isDateCell(c));
+      if (!cells.length) return null;
+      return cells.find((c) => dayRe.test(text(c))) ||
+        cells.find((c) => !/NOT AVAILABLE|REGRET/i.test(text(c.closest('td') || c)));
+    }, 15000, 200);
+    if (!dateCell) return status('availability did not load; click Refresh or the date yourself');
+    dateCell.click();
+    LOG('date cell =', text(dateCell.closest('td') || dateCell));
+
+    const book = await waitFor(() => {
+      const b = $$('button', card).find((x) => /BOOK NOW/i.test(text(x)));
+      return b && !b.disabled && !b.classList.contains('disable-book') ? b : null;
+    }, 8000, 150);
+    if (!book) return status('Book Now not enabled (no seats or not open yet)');
+    status('booking');
+    book.click();
   }
 
   // ---------- step 3: passengers ----------
-  function parsePassengers(text) {
-    return text.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
-      const [name, age, gender, berth] = l.split(',').map((x) => x.trim());
-      return { name, age, gender: (gender || 'M').toUpperCase(), berth: (berth || '').toUpperCase() };
+  function parsePassengers(raw) {
+    return raw.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
+      const [name, age, gender, berth, food] = l.split(',').map((x) => (x || '').trim());
+      return { name, age, gender: (gender || 'M').toUpperCase()[0], berth: berth.toUpperCase(), food: food.toUpperCase()[0] || '' };
     });
   }
 
-  const BERTH_LABEL = { LB: 'Lower', MB: 'Middle', UB: 'Upper', SL: 'Side Lower', SU: 'Side Upper', WS: 'Window' };
+  const BERTH_LABEL = { LB: 'LOWER', MB: 'MIDDLE', UB: 'UPPER', SL: 'SIDE LOWER', SU: 'SIDE UPPER', WS: 'WINDOW' };
+  const FOOD_LABEL = { V: 'VEG', N: 'NON VEG', D: 'NO FOOD' };
+
+  function selectOption(sel, code, labels) {
+    if (!sel || !code) return;
+    const opts = [...sel.options];
+    const label = labels[code];
+    const opt = opts.find((o) => o.value === code) ||
+      (label && opts.find((o) => o.text.toUpperCase().replace(/-/g, ' ').trim() === label)) ||
+      (label && opts.find((o) => o.text.toUpperCase().replace(/-/g, ' ').startsWith(label)));
+    if (opt) setValue(sel, opt.value);
+  }
 
   async function passengerStep(cfg) {
     const list = parsePassengers(cfg.passengers || '');
     if (!list.length) return status('no passengers saved');
     status('filling passengers');
+    await waitFor(() => $('app-passenger'), 15000);
     for (let i = 0; i < list.length; i++) {
-      if (i > 0) {
-        const add = await waitFor(() => byText('a, span, button', 'Add Passenger'));
-        if (add) add.click();
+      if ($$('app-passenger').length <= i) {
+        const add = $('button.add_psgn, a.add_psgn_btn') ||
+          $$('a, span, button').find((e) => /^\+?\s*ADD PASSENGER/i.test(text(e)));
+        if (!add) return status('Add Passenger link not found');
+        add.click();
       }
-      const rows = await waitFor(() => {
-        const r = document.querySelectorAll('app-passenger');
-        return r.length > i ? r : null;
-      });
-      if (!rows) return status('passenger row ' + (i + 1) + ' not found');
-      const row = rows[i];
+      const row = await waitFor(() => $$('app-passenger')[i]);
+      if (!row) return status(`passenger row ${i + 1} not found`);
       const p = list[i];
-      const name = row.querySelector('p-autocomplete input, input[placeholder="Name"]');
-      if (name) { name.focus(); setValue(name, p.name); }
-      const age = row.querySelector('input[formcontrolname="passengerAge"]');
-      if (age) setValue(age, p.age);
-      const gender = row.querySelector('select[formcontrolname="passengerGender"]');
+      const name = $('input[formcontrolname="passengerName"], p-autocomplete input, input[placeholder="Name"]', row);
+      if (name) { name.focus(); setValue(name, p.name); name.dispatchEvent(new Event('blur', { bubbles: true })); }
+      const age = $('input[formcontrolname="passengerAge"], input[placeholder="Age"]', row);
+      if (age) { age.focus(); setValue(age, p.age); age.dispatchEvent(new Event('blur', { bubbles: true })); }
+      const gender = $('select[formcontrolname="passengerGender"]', row);
       if (gender) setValue(gender, p.gender);
-      const berth = row.querySelector('select[formcontrolname="passengerBerthChoice"]');
-      if (berth && p.berth && BERTH_LABEL[p.berth]) {
-        const opt = [...berth.options].find((o) => o.text.includes(BERTH_LABEL[p.berth]));
-        if (opt) setValue(berth, opt.value);
-      }
+      selectOption($('select[formcontrolname="passengerBerthChoice"]', row), p.berth, BERTH_LABEL);
+      selectOption($('select[formcontrolname="passengerFoodChoice"]', row), p.food, FOOD_LABEL);
+      LOG('passenger', i + 1, p.name);
+      await sleep(150);
     }
     if (cfg.mobile) {
-      const mob = document.querySelector('input#mobileNumber, input[formcontrolname="mobileNumber"]');
+      const mob = $('input[formcontrolname="mobileNumber"], input#mobileNumber');
       if (mob) setValue(mob, cfg.mobile);
     }
-    status('passengers filled. Review, then continue, solve captcha and pay yourself.');
+    status('passengers filled. Check them, then continue, solve the captcha and pay.');
     chrome.storage.local.set({ armed: false });
   }
 
@@ -171,7 +276,7 @@
     if (running) return;
     const { config: cfg, armed } = await getStore();
     if (!cfg) return status('no saved settings (open the extension popup)');
-    if (!armed && !force) return status(armed === false ? 'disarmed' : 'idle');
+    if (!armed && !force) return status(armed === false ? 'disarmed' : 'idle (not armed)');
     running = true;
     try {
       const url = location.href;
@@ -186,20 +291,17 @@
     }
   }
 
-  // Start immediately when the user arms from the popup on an already-open page.
+  // Start as soon as the user arms from the popup.
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area === 'local' && changes.armed && changes.armed.newValue === true) run(false);
   });
 
-  // The site is a single-page app, so watch for route changes.
+  // IRCTC is a single-page app, so watch for route changes.
   let lastUrl = location.href;
   setInterval(() => {
     if (location.href !== lastUrl) { lastUrl = location.href; run(false); }
-  }, 500);
+  }, 300);
 
-  panel.style.cursor = 'pointer';
-  panel.title = 'Click to run the step for this page now';
   panel.addEventListener('click', () => run(true));
-
   run(false);
 })();

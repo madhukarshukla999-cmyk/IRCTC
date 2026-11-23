@@ -19,6 +19,19 @@ You still log in, solve the captcha, and approve payment yourself.
 
 A small status box at the bottom right shows progress. Click it to run the step for the current page.
 
+Passenger format, one per line: `Name, Age, M/F/T, Berth, Food`. Berth (LB, MB, UB, SL, SU, WS)
+and food (V, N, D = no food) are optional. Dates use `DD/MM/YYYY`.
+
+## Updating
+After `git pull`, click reload on the extension card in `chrome://extensions`, then refresh the
+IRCTC tab. The popup footer shows the loaded version.
+
+## Troubleshooting
+- No status box on the page: the extension is not loaded. Check `chrome://extensions` for errors
+  and refresh the IRCTC tab.
+- Status shows `error: ...` or stops at a step: open DevTools (F12) > Console and look for lines
+  starting with `[Tatkal]`. They name the element that was not found.
+
 ## Notes
 - Selectors for IRCTC's Angular pages were written without access to the live site and will need
   adjusting. Update them in `content.js`.
