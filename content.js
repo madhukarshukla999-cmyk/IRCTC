@@ -410,6 +410,46 @@
     activity(box.checked === want ? 'info' : 'error', `${label}: ${box.checked ? 'ticked' : 'not ticked'}`);
   }
 
+  // "Pay through BHIM/UPI" and not the card option, whose text also contains "UPI_CC / UPI_CL".
+  const isBhimUpi = (t) => /BHIM/i.test(t) && !/CREDIT|DEBIT|NET ?BANKING|UPI_C/i.test(t);
+
+  // Text shown next to a radio. PrimeNG hides the real input in a wrapper without text, so use
+  // the p-radiobutton component, a <label for>, or the nearest ancestor that has short text.
+  function radioLabel(r) {
+    const comp = r.closest('p-radiobutton');
+    if (comp && text(comp)) return { text: text(comp), target: $('.ui-radiobutton-box, .p-radiobutton-box, label', comp) };
+    const forLabel = r.id && $(`label[for="${r.id}"]`);
+    if (forLabel) return { text: text(forLabel), target: forLabel };
+    for (let el = r.parentElement; el && el !== document.body; el = el.parentElement) {
+      const t = text(el);
+      if (t) return t.length < 200 ? { text: t, target: el.querySelector('.ui-radiobutton-box, label') } : null;
+    }
+    return null;
+  }
+
+  const radioChecked = (r) => r.checked ||
+    !!r.closest('p-radiobutton')?.querySelector('.ui-radiobutton-box.ui-state-active, .p-radiobutton-box.p-highlight');
+
+  async function choosePaymentMode() {
+    const radios = $$('input[type="radio"][name="paymentType"]');
+    const pool = radios.length ? radios : $$('input[type="radio"]');
+    const options = pool.map((r) => ({ r, label: radioLabel(r) })).filter((o) => o.label);
+    const upi = options.find((o) => isBhimUpi(o.label.text));
+    if (!upi) {
+      activity('error', 'payment mode "Pay through BHIM/UPI" not found; options seen: ' +
+        (options.map((o) => `"${o.label.text.slice(0, 40)}"`).join(', ') || 'none'));
+      return;
+    }
+    if (!radioChecked(upi.r)) {
+      // Click what the user would click (the circle or label); fall back to the hidden input.
+      if (upi.label.target) upi.label.target.click();
+      await waitFor(() => radioChecked(upi.r), 300, 20);
+      if (!radioChecked(upi.r)) { upi.r.click(); await waitFor(() => radioChecked(upi.r), 300, 20); }
+    }
+    activity(radioChecked(upi.r) ? 'info' : 'error',
+      radioChecked(upi.r) ? 'payment mode: Pay through BHIM/UPI' : 'could not select "Pay through BHIM/UPI"; select it yourself');
+  }
+
   async function passengerStep(cfg) {
     const list = parsePassengers(cfg.passengers || '');
     if (!list.length) return status('no passengers saved', 'error');
@@ -453,13 +493,7 @@
       return chrome.storage.local.set({ armed: false });
     }
 
-    // Payment mode on this page: pick the radio whose label mentions UPI.
-    const upiRadio = $$('input[type="radio"][name="paymentType"], input[type="radio"]').find((r) => {
-      const label = r.closest('label, p-radiobutton, .ui-radiobutton-wrapper, div') || r.parentElement;
-      return /BHIM|UPI/i.test(text(label)) && text(label).length < 200;
-    });
-    if (upiRadio) { upiRadio.click(); activity('info', 'payment mode: BHIM/UPI'); }
-    else activity('info', 'UPI payment-mode option not found; leaving the default');
+    await choosePaymentMode();
 
     await sleep(150);
     const cont = forwardButton(/CONTINUE|PROCEED|NEXT/);
@@ -503,7 +537,7 @@
     await waitFor(() => $$('.bank-type, #pay-type').some(visible), 15000);
     await sleep(200);
     const option = $$('#pay-type .bank-type, .bank-type').filter(visible)
-      .find((o) => /BHIM|UPI|IPAY/i.test(text(o)));
+      .find((o) => isBhimUpi(text(o)) || (/UPI|IPAY/i.test(text(o)) && !/CREDIT|DEBIT|NET ?BANKING|UPI_C/i.test(text(o))));
     if (option) { option.click(); activity('info', 'payment option: ' + text(option).slice(0, 60)); await sleep(200); }
     else activity('info', 'UPI payment option not found; using the default');
     const pay = await waitFor(() => forwardButton(/PAY\s*&\s*BOOK|PAY AND BOOK|PAY/), 8000, 100);
@@ -594,6 +628,7 @@
       'Mobile box': 'input[formcontrolname="mobileNumber"], input#mobileNumber',
       'Auto upgradation checkbox': 'input#autoUpgradation',
       'Confirm berths only checkbox': 'input#confirmberths',
+      'Payment mode options': 'input[type="radio"][name="paymentType"]',
     },
   };
 
