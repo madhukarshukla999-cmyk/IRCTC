@@ -143,6 +143,7 @@ $('saveLogin').onclick = async () => {
   $('loginPin').value = '';
   say('Login saved and unlocked');
   addLog('info', `login saved for ${user} (password encrypted)`);
+  send('login'); // fill the login pop-up now if it is already open
   showLoginState();
 };
 
@@ -156,6 +157,7 @@ $('unlock').onclick = async () => {
     $('loginPin').value = '';
     say('Unlocked');
     addLog('info', `login unlocked for ${savedLogin.user}`);
+    send('login'); // fill the login pop-up now if it is already open
   } catch {
     say('Wrong PIN');
     addLog('error', 'unlock failed: wrong PIN');

@@ -40,9 +40,11 @@ and food (V, N, D = no food) are optional. Dates use `DD/MM/YYYY`.
 
 ## IRCTC login
 Open **IRCTC login** at the top of the popup, enter your user ID, password and a PIN, and click
-**Save login**. When IRCTC shows its login form (for example after Book Now), the extension fills
-your user ID and password and puts the cursor in the captcha box. **You type the captcha**; Sign In
-is clicked once you stop typing. If the captcha was wrong, type the new one.
+**Save login**. When IRCTC shows its login pop-up (for example after Book Now), the extension fills
+your user ID and password and clicks **Sign In**. If IRCTC then asks for a captcha, the cursor is put
+in the captcha box; **you type it** and Sign In is clicked again once you stop typing. If IRCTC shows
+an error (e.g. wrong password), its text appears in the activity log. The "visually impaired / OTP"
+option is left untouched.
 
 How the password is kept:
 - It is encrypted with your PIN (AES-256-GCM, key from PBKDF2-SHA-256) before it is saved.
@@ -53,7 +55,7 @@ How the password is kept:
 - **Forget** deletes the saved login. Use a PIN of 6+ characters; a short PIN is easier to guess
   for someone who has access to your computer.
 
-If the login is locked, only the user ID is filled.
+If the login is locked, only the user ID is filled. Unlocking in the popup then fills the open pop-up and signs in.
 
 ## Saved trips
 At the top of the popup: type a name and click **Save trip** to store the current form. Pick a

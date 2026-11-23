@@ -143,8 +143,34 @@
   const LOGIN_USER = 'input[formcontrolname="userid"], input[placeholder="User Name"]';
   const LOGIN_PASS = 'input[formcontrolname="password"], input[type="password"]';
   const LOGIN_CAPTCHA = 'input[formcontrolname="captcha"], input#captcha, input#nlpAnswer, input[placeholder*="aptcha"]';
-  const handledLogins = new WeakSet();
+  let handledLogins = new WeakSet();
+  const retryLogin = () => { handledLogins = new WeakSet(); handleLogin(); };
   let loginBusy = false;
+
+  // Fill a login box and confirm the value stays. IRCTC can reset the form just after the pop-up
+  // opens, which wipes values filled too early, so re-fill up to 5 times.
+  async function fillAndKeep(el, value) {
+    for (let i = 0; i < 5; i++) {
+      el.focus();
+      setValue(el, value);
+      el.dispatchEvent(new Event('blur', { bubbles: true }));
+      await sleep(250);
+      if (el.value === value) return true;
+    }
+    return false;
+  }
+
+  // Wait until the user has typed at least 4 characters and paused for 1 s.
+  async function waitForTyping(input, ms = 3 * 60 * 1000) {
+    const end = Date.now() + ms;
+    let last = input.value, changed = Date.now();
+    while (Date.now() < end && input.isConnected && visible(input)) {
+      await sleep(100);
+      if (input.value !== last) { last = input.value; changed = Date.now(); }
+      if (last.trim().length >= 4 && Date.now() - changed > 1000) return true;
+    }
+    return false;
+  }
 
   async function handleLogin() {
     if (loginBusy) return;
@@ -153,43 +179,58 @@
     handledLogins.add(user);
     loginBusy = true;
     try {
+      activity('step', 'login pop-up found');
       const form = user.closest('form, app-login, .ui-dialog, .modal-content') || document;
       const pass = $$(LOGIN_PASS, form).find(visible);
       let login;
       try { login = await chrome.runtime.sendMessage({ type: 'getLogin' }); } catch (e) { login = { error: e.message }; }
-      if (!login || login.none) return activity('info', 'login form shown; no saved login (add one in the popup to fill it automatically)');
-      if (login.error) return activity('error', 'could not get saved login: ' + login.error);
-      setValue(user, login.user);
-      user.dispatchEvent(new Event('blur', { bubbles: true }));
-      if (login.locked) return activity('error', `login: filled user ID ${login.user}; password is locked. Open the popup and click Unlock, or type it yourself.`);
+      if (!login || login.none) return activity('error', 'login: no saved login. Open the popup > IRCTC login > Save login.');
+      if (login.error) return activity('error', 'login: could not get saved login (' + login.error + '). Reload the extension and refresh this page.');
+
+      if (!(await fillAndKeep(user, login.user))) return activity('error', 'login: user ID box keeps clearing; type it yourself');
+      if (login.locked) return activity('error', `login: filled user ID ${login.user}; password is locked. Open the popup, enter your PIN and click Unlock; the pop-up is then filled and signed in automatically.`);
       if (!pass) return activity('error', 'login: password box not found');
-      setValue(pass, login.password);
-      pass.dispatchEvent(new Event('blur', { bubbles: true }));
+      if (!(await fillAndKeep(pass, login.password))) return activity('error', 'login: password box keeps clearing; type it yourself');
       activity('ok', `login: filled user ID ${login.user} and password`);
 
-      const captcha = await waitFor(() => $$(LOGIN_CAPTCHA, form).find(visible), 5000);
-      if (!captcha) return activity('step', 'login: no captcha box found; click Sign In yourself');
-      captcha.scrollIntoView({ block: 'center' });
-      captcha.focus();
-      status('type the login captcha; Sign In is clicked when you stop typing');
-      const end = Date.now() + 3 * 60 * 1000;
-      let last = captcha.value, changed = Date.now();
-      while (Date.now() < end && captcha.isConnected && visible(captcha)) {
-        await sleep(100);
-        if (captcha.value !== last) { last = captcha.value; changed = Date.now(); }
-        if (last.trim().length >= 4 && Date.now() - changed > 1000) break;
+      const signInButton = () => $$('button', form).filter(visible)
+        .find((b) => /^\s*(SIGN ?IN|LOG ?IN)\s*$/i.test(text(b)) && !b.disabled);
+      const errorText = () => text($$('.loginError, .error, .text-danger, .alert-danger, .invalid-feedback', form).find(visible));
+
+      // Up to 3 rounds: click Sign In; if IRCTC then asks for a captcha, wait for the user to type it.
+      for (let round = 1; round <= 3; round++) {
+        const captcha = $$(LOGIN_CAPTCHA, form).find(visible);
+        if (captcha) {
+          captcha.scrollIntoView({ block: 'center' });
+          captcha.focus();
+          status('type the login captcha; Sign In is clicked when you stop typing');
+          if (!(await waitForTyping(captcha))) {
+            return activity(user.isConnected && visible(user) ? 'error' : 'ok', user.isConnected && visible(user) ? 'login: no captcha typed in 3 minutes' : 'logged in');
+          }
+        }
+        const signIn = signInButton();
+        if (!signIn) return activity('error', 'login: Sign In button not found; click it yourself');
+        signIn.click();
+        activity('step', `login: Sign In clicked${captcha ? ' (with captcha)' : ''}`);
+
+        // Wait for: pop-up closed (done), a captcha box appearing, or an error message.
+        const seenCaptcha = captcha;
+        const outcome = await waitFor(() => {
+          if (!user.isConnected || !visible(user)) return 'closed';
+          const c = $$(LOGIN_CAPTCHA, form).find(visible);
+          if (c && (c !== seenCaptcha || c.value === '')) return 'captcha';
+          if (errorText()) return 'error';
+          return null;
+        }, 8000, 100);
+        if (outcome === 'closed') return activity('ok', 'logged in');
+        if (outcome === 'error') activity('error', 'login: IRCTC says "' + errorText().slice(0, 120) + '"');
+        if (outcome === 'captcha') { activity('step', 'login: IRCTC asks for a captcha'); continue; }
+        if (!outcome) return activity('error', 'login: no response after Sign In; check the pop-up');
+        // Error message shown: refill the password in case IRCTC cleared it, then let the captcha round run.
+        if (pass.value !== login.password) await fillAndKeep(pass, login.password);
+        if (!$$(LOGIN_CAPTCHA, form).find(visible)) return activity('error', 'login: fix the error above and click Sign In yourself');
       }
-      if (!captcha.isConnected || !visible(captcha)) return activity('info', 'login form closed');
-      const signIn = $$('button', form).filter(visible).find((b) => /SIGN ?IN|LOG ?IN/i.test(text(b)) && !b.disabled);
-      if (!signIn) return activity('error', 'login: Sign In button not found; click it yourself');
-      signIn.click();
-      activity('step', 'login: Sign In clicked');
-      // Wrong captcha or password: the form stays open with a new captcha. Allow another try.
-      await waitFor(() => !user.isConnected || !visible(user) || captcha.value === '', 6000, 100);
-      if (user.isConnected && visible(user)) {
-        activity('error', 'login form still open (wrong captcha or password?); type the new captcha');
-        handledLogins.delete(user);
-      } else activity('ok', 'logged in');
+      activity('error', 'login: still not signed in after 3 tries; finish it yourself');
     } finally {
       loginBusy = false;
     }
@@ -698,6 +739,17 @@
   function checkPage() {
     const key = Object.keys(CHECKS).find((k) => location.href.includes(k));
     activity('step', 'page check: ' + location.href);
+    if ($$(LOGIN_USER).some(visible)) {
+      const n = (sel) => $$(sel).filter(visible).length;
+      activity('step', 'login pop-up is open');
+      activity(n(LOGIN_USER) ? 'ok' : 'error', `Login user ID box: ${n(LOGIN_USER)} found`);
+      activity(n(LOGIN_PASS) ? 'ok' : 'error', `Login password box: ${n(LOGIN_PASS)} found`);
+      activity('info', `Login captcha box: ${n(LOGIN_CAPTCHA)} found (IRCTC may only show it after Sign In)`);
+      const btn = $$('button').filter(visible).find((b) => /^\s*(SIGN ?IN|LOG ?IN)\s*$/i.test(text(b)));
+      activity(btn ? 'ok' : 'error', `Sign In button: ${btn ? 'found' : 'NOT FOUND'}`);
+      const u = $$(LOGIN_USER).find(visible);
+      activity('info', 'user ID box attributes: ' + [...u.attributes].map((a) => `${a.name}="${a.value}"`).join(' ').slice(0, 200));
+    }
     if (!key) {
       activity('error', 'not a page this extension fills. Open https://www.irctc.co.in/nget/train-search');
       return;
@@ -714,7 +766,8 @@
   chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
     if (msg.type === 'ping') reply({ ok: true, page: location.pathname });
     else if (msg.type === 'check') { checkPage(); reply({ ok: true }); }
-    else if (msg.type === 'run') { run(true); reply({ ok: true }); }
+    else if (msg.type === 'run') { retryLogin(); run(true); reply({ ok: true }); }
+    else if (msg.type === 'login') { retryLogin(); reply({ ok: true }); }
     else if (msg.type === 'sync') { syncServerTime().then(() => reply({ ok: true, offset: clockOffset })); return true; }
   });
 
@@ -731,6 +784,6 @@
     if (location.href !== lastUrl) { lastUrl = location.href; run(false, true); }
   }, 200);
 
-  panel.addEventListener('click', () => run(true));
+  panel.addEventListener('click', () => { retryLogin(); run(true); });
   run(false);
 })();
